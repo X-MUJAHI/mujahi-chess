@@ -14,7 +14,8 @@ interface RepoFileEntry {
 function categorizePath(relPath: string): string {
   if (relPath.startsWith('api/')) return 'Render Backend (API)';
   if (relPath.startsWith('website/')) return 'Vercel Frontend';
-  if (relPath.startsWith('examples/')) return 'Chess Helper 2.1.0';
+  if (relPath.startsWith('extension/')) return 'Chess Helper Extension';
+  if (relPath.startsWith('examples/')) return 'Chess Helper Adapters';
   if (relPath.startsWith('docs/')) return 'Documentation';
   if (relPath.startsWith('LICENSES/')) return 'Compliance';
   if (relPath.startsWith('.github/')) return 'CI / GitHub';

@@ -1,0 +1,51 @@
+{
+  "background": {
+    "service_worker": "engine/mujahi-background.js"
+  },
+  "content_scripts": [
+    {
+      "css": [
+        "style.css"
+      ],
+      "js": [
+        "engine/mujahi-provider.js",
+        "engine.js",
+        "ui.js"
+      ],
+      "matches": [
+        "https://www.chess.com/*"
+      ]
+    }
+  ],
+  "host_permissions": [
+    "https://stockfish.online/*",
+    "https://mujahi-chess.onrender.com/*",
+    "https://xndroid.store/*",
+    "https://explorer.lichess.org/*",
+    "https://lichess.org/*",
+    "https://tablebase.lichess.ovh/*"
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoe5RmNbYG/suynlX9qQ51nWmWXmzbwH9mK4pScLNjppWDDhdQ8Ixn470i95UsviOxLY4/odjeL0bvU6hlOGzXVBAzHr06U1cySdgvuGCty/G0hQXQCqrYl8TkNWFi706JfIpYr2abjZ7inu2I1sl/SjRlAZvH7no1S482k3CgigMXmHxcCBCutPWpvTbYFmnEqoMBui2ORWqbgae3kPYmnnFsigssg6aF79Ndamnt4zPnfIRDqR/Zd1A3eZFQD2l1EiSBKDH0o6VXlL+AJp4Cf8MqbwFP8f/fTZexE6QmOBNbF/1rZ7+7+bs0SMYoOOl7XTF8SvLfTCcTpZnYlIiRwIDAQAB",
+  "manifest_version": 3,
+  "name": "Chess Helper (chess.com) - SuperMode",
+  "update_url": "https://clients2.google.com/service/update2/crx",
+  "version": "2.1.0",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "images/xndroid.jpg",
+        "images/icon.svg",
+        "engine/host.html",
+        "engine/host.js",
+        "engine/stockfish-19-lite-single.js",
+        "engine/stockfish-19-lite-single.wasm"
+      ],
+      "matches": [
+        "https://www.chess.com/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self';"
+  }
+}

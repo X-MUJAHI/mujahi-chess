@@ -1,0 +1,17 @@
+Stockfish 19 Lite Single-threaded engine assets
+
+This source patch expects these exact upstream files in this folder:
+
+1) stockfish-19-lite-single.js
+   https://github.com/nmrugg/stockfish.js/releases/download/v19.0.1/stockfish-19-lite-single.js
+   Expected size: 28,230 bytes
+
+2) stockfish-19-lite-single.wasm
+   https://github.com/nmrugg/stockfish.js/releases/download/v19.0.1/stockfish-19-lite-single.wasm
+   Expected size: 1,845,971 bytes
+
+The two files are a matched pair from stockfish.js 19.0.1. Keep them together in this `engine/` folder. The engine is approximately 1.87 MB combined (about 1.79 MiB).
+
+Upstream release: https://github.com/nmrugg/stockfish.js/releases/tag/v19.0.1
+License: GPL-3.0. See ../LICENSES/GPL-3.0.txt and ../THIRD_PARTY_NOTICES.md.
+
