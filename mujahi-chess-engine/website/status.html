@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server Status — MUJAHI Chess Engine</title>
+  <meta name="description" content="Real-time health, engine commit verification, memory usage, and queue load for MUJAHI Chess Engine API.">
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+  <link rel="stylesheet" href="./css/main.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand-link" href="./index.html">
+        <img class="brand-mark" src="./assets/favicon.svg" alt="MUJAHI mark">
+        <span>MUJAHI Chess Engine</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a class="nav-link" href="./index.html">Overview</a>
+        <a class="nav-link" href="./analysis.html">Analysis</a>
+        <a class="nav-link" href="./api.html">API Docs</a>
+        <a class="nav-link" href="./status.html" aria-current="page">Status</a>
+        <a class="nav-link" href="./extension.html">Chess Helper</a>
+      </nav>
+      <div class="header-actions">
+        <button id="status-refresh-btn" type="button" class="btn btn-primary btn-sm">Refresh Probe</button>
+        <button id="mobile-menu-toggle" class="mobile-menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Toggle navigation menu">☰</button>
+      </div>
+    </div>
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile navigation">
+      <a class="nav-link" href="./index.html">Overview</a>
+      <a class="nav-link" href="./analysis.html">Analysis</a>
+      <a class="nav-link" href="./api.html">API Docs</a>
+      <a class="nav-link" href="./status.html" aria-current="page">Status</a>
+      <a class="nav-link" href="./extension.html">Chess Helper</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="page-header">
+      <div class="container">
+        <p class="eyebrow">LIVE CONTAINER TELEMETRY</p>
+        <h1 class="page-title">Backend Health &amp; Engine Verification</h1>
+        <p class="page-subtitle">
+          Queries <code>GET /health</code> and <code>GET /v1/engine</code> directly from your browser. You can temporarily point this console to any Render deployment URL below.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container" style="display: grid; gap: 20px;">
+        <div class="card">
+          <form id="api-override-form" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;">
+            <div class="field" style="flex: 1; min-width: 240px;">
+              <label for="api-override-input">Target API Base URL (Browser Local Override)</label>
+              <input id="api-override-input" class="input mono" type="url" placeholder="https://mujahi-chess.onrender.com">
+            </div>
+            <button type="submit" class="btn btn-secondary">Apply URL</button>
+            <button id="api-override-reset" type="button" class="btn btn-secondary">Reset to config.js</button>
+          </form>
+        </div>
+
+        <div id="status-alert" class="notice">Waiting for status check...</div>
+
+        <div class="grid-4">
+          <div class="card">
+            <div class="metric-label">Engine Status</div>
+            <div id="status-overall" class="metric-value status-label">—</div>
+          </div>
+          <div class="card">
+            <div class="metric-label">Probe Latency</div>
+            <div id="status-latency" class="metric-value">—</div>
+          </div>
+          <div class="card">
+            <div class="metric-label">Active / Queued Jobs</div>
+            <div class="metric-value"><span id="status-queue-active">0</span> / <span id="status-queue-waiting">0</span></div>
+          </div>
+          <div class="card">
+            <div class="metric-label">Process Uptime</div>
+            <div id="status-uptime" class="metric-value">—</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h2 class="card-title">Binary &amp; Memory</h2>
+            <dl class="spec-list">
+              <div class="spec-row">
+                <dt class="spec-label">Engine Version</dt>
+                <dd id="status-engine-version" class="spec-value">—</dd>
+              </div>
+              <div class="spec-row">
+                <dt class="spec-label">Pinned Commit</dt>
+                <dd id="status-engine-commit" class="spec-value">—</dd>
+              </div>
+              <div class="spec-row">
+                <dt class="spec-label">Default SFNNv16 Net</dt>
+                <dd id="status-engine-nnue" class="spec-value">—</dd>
+              </div>
+              <div class="spec-row">
+                <dt class="spec-label">Container Memory</dt>
+                <dd id="status-memory-rss" class="spec-value">—</dd>
+              </div>
+            </dl>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Active Limits</h2>
+            <div class="table-wrap">
+              <table>
+                <tbody id="status-config-rows">
+                  <tr><td colspan="2">Waiting for <code>/v1/engine</code>...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">Raw Telemetry</h2>
+          <pre id="status-raw-json" class="code-block">{}</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>MUJAHI Chess Engine API · Wrapper MIT · Stockfish 19 GPL-3.0</span>
+      <div class="footer-links">
+        <a href="./index.html">Overview</a>
+        <a href="./analysis.html">Analysis</a>
+        <a href="./api.html">API Docs</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./config.js"></script>
+  <script src="./js/api-client.js"></script>
+  <script src="./js/app.js"></script>
+  <script src="./js/status.js"></script>
+</body>
+</html>

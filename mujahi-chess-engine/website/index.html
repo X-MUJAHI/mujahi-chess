@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MUJAHI Chess Engine API — Native Stockfish 19 Hosting</title>
+  <meta name="description" content="Self-hosted Stockfish 19 (sf_19) engine API on Node.js 24 LTS and Docker for Render, with a static frontend for Vercel and Chess Helper 2.1.0 MV3 integration.">
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+  <link rel="stylesheet" href="./css/main.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand-link" href="./index.html">
+        <img class="brand-mark" src="./assets/favicon.svg" alt="MUJAHI mark">
+        <span>MUJAHI Chess Engine</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a class="nav-link" href="./index.html" aria-current="page">Overview</a>
+        <a class="nav-link" href="./analysis.html">Analysis</a>
+        <a class="nav-link" href="./api.html">API Docs</a>
+        <a class="nav-link" href="./status.html">Status</a>
+        <a class="nav-link" href="./extension.html">Chess Helper</a>
+      </nav>
+      <div class="header-actions">
+        <a class="btn btn-primary btn-sm" href="./analysis.html">Open Analysis</a>
+        <button id="mobile-menu-toggle" class="mobile-menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Toggle navigation menu">☰</button>
+      </div>
+    </div>
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile navigation">
+      <a class="nav-link" href="./index.html" aria-current="page">Overview</a>
+      <a class="nav-link" href="./analysis.html">Analysis</a>
+      <a class="nav-link" href="./api.html">API Docs</a>
+      <a class="nav-link" href="./status.html">Status</a>
+      <a class="nav-link" href="./extension.html">Chess Helper</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero-section">
+      <div class="container hero-grid">
+        <div>
+          <p class="eyebrow">STOCKFISH 19 (SF_19) · SFNNv16 · NODE.JS 24 LTS</p>
+          <h1 class="hero-title">Native Stockfish 19 API built for single-search multi-depth analysis.</h1>
+          <p class="hero-lead">
+            MUJAHI Chess Engine API runs a persistent C++ Stockfish 19 process inside Docker on Render, serving REST JSON and progressive Server-Sent Events (SSE) to this Vercel frontend and the Chess Helper 2.1.0 browser extension.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="./analysis.html">Launch Live Analysis</a>
+            <a class="btn btn-secondary" href="./api.html">Read API Contract</a>
+            <a class="btn btn-secondary" href="./extension.html">Extension Adapter</a>
+          </div>
+        </div>
+
+        <aside id="home-live-summary" class="card" aria-label="Live backend probe">
+          <div class="code-header">
+            <h2 class="card-title" style="margin: 0;">Live Backend Summary</h2>
+            <a class="btn btn-secondary btn-sm" href="./status.html">Diagnostics</a>
+          </div>
+          <dl class="spec-list">
+            <div class="spec-row">
+              <dt class="spec-label">API Endpoint</dt>
+              <dd class="spec-value" data-api-base-url>—</dd>
+            </div>
+            <div class="spec-row">
+              <dt class="spec-label">Engine State</dt>
+              <dd id="home-status-value" class="spec-value status-label">Checking...</dd>
+            </div>
+            <div class="spec-row">
+              <dt class="spec-label">Engine Version</dt>
+              <dd id="home-version-value" class="spec-value">Stockfish 19 (sf_19)</dd>
+            </div>
+            <div class="spec-row">
+              <dt class="spec-label">NNUE Network</dt>
+              <dd id="home-net-value" class="spec-value">nn-1a298aa575a0.nnue</dd>
+            </div>
+            <div class="spec-row">
+              <dt class="spec-label">Queue Depth</dt>
+              <dd id="home-queue-value" class="spec-value">—</dd>
+            </div>
+            <div class="spec-row">
+              <dt class="spec-label">Health Latency</dt>
+              <dd id="home-latency-value" class="spec-value">—</dd>
+            </div>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Core Architecture</h2>
+          <p class="section-desc">Designed for predictable execution on constrained 512 MB containers with strict process recovery.</p>
+        </div>
+
+        <div class="grid-3">
+          <article class="card">
+            <h3 class="card-title">Single-Search Multi-Depth</h3>
+            <p class="card-copy">
+              Request <code>[5, 10, 15]</code> in a single call. Stockfish executes one iterative deepening run to depth 15 and captures or streams snapshots at depths 5, 10, and 15 without repeating earlier plies.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3 class="card-title">Session-Isolated Scheduler</h3>
+            <p class="card-copy">
+              Client session IDs prioritize latest-position-first execution, cancel obsolete requests from the same client only, and deduplicate identical FEN requests across concurrent users.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3 class="card-title">Semantic FEN &amp; UCI Safety</h3>
+            <p class="card-copy">
+              Every FEN is validated for board rank sums, king count, non-adjacent kings, opposing-king check legality, castling rook/king squares, and en passant geometry before touching Stockfish stdin.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top: 0;">
+      <div class="container">
+        <div class="card">
+          <div class="section-header" style="margin-bottom: 14px;">
+            <h2 class="section-title">Render Hosting Tiers</h2>
+            <p class="section-desc">Free tier is supported for testing and cold verification; Starter or higher is recommended for active play.</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Render Tier</th>
+                  <th>Resources</th>
+                  <th>Recommended Config</th>
+                  <th>Expected Behaviour</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Free</strong></td>
+                  <td class="mono">0.1 vCPU · 512 MB RAM</td>
+                  <td class="mono">THREADS=1 · HASH=64</td>
+                  <td>Sleeps after 15 min idle (15–50s wake). Suitable for testing and verification only; no consistent production SLA.</td>
+                </tr>
+                <tr>
+                  <td><strong>Starter</strong></td>
+                  <td class="mono">0.5 vCPU · 512 MB RAM</td>
+                  <td class="mono">THREADS=1 · HASH=64–96</td>
+                  <td>Always-on container, zero sleep cold starts, reliable low-depth extension responsiveness.</td>
+                </tr>
+                <tr>
+                  <td><strong>Standard</strong></td>
+                  <td class="mono">1.0+ vCPU · 2 GB RAM</td>
+                  <td class="mono">THREADS=1–2 · HASH=128–256</td>
+                  <td>Higher NPS throughput for deeper 15–18+ ply lines and multi-user queues.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>MUJAHI Chess Engine API · Wrapper MIT · Stockfish 19 GPL-3.0</span>
+      <div class="footer-links">
+        <a href="./analysis.html">Analysis</a>
+        <a href="./api.html">API Docs</a>
+        <a href="./status.html">Status</a>
+        <a href="./extension.html">Chess Helper</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./config.js"></script>
+  <script src="./js/api-client.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>

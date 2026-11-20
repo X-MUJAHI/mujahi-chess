@@ -1,0 +1,6 @@
+{
+  "name": "MUJAHI Chess Engine API",
+  "description": "Production-oriented Stockfish 19 (sf_19) hosting platform, static Vercel web console, and Chess Helper 2.1.0 provider architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

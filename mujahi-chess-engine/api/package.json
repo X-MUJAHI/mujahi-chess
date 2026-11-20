@@ -1,0 +1,24 @@
+{
+  "name": "mujahi-chess-engine-api",
+  "version": "1.0.0",
+  "description": "MUJAHI Chess Engine REST and SSE API hosting native Stockfish 19 (sf_19).",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24.0.0 <25.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/*.test.js",
+    "test:integration": "node tests/integration-docker.js",
+    "bench": "node src/utils/bench.js"
+  },
+  "dependencies": {
+    "cors": "2.8.5",
+    "express": "4.21.2",
+    "express-rate-limit": "7.5.1",
+    "helmet": "8.1.0"
+  },
+  "license": "MIT"
+}

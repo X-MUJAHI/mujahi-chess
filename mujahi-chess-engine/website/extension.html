@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chess Helper 2.1.0 Integration — MUJAHI Chess Engine</title>
+  <meta name="description" content="Connect MUJAHI Stockfish 19 API as a selectable provider in Chess Helper 2.1.0 (SuperMode) via MV3 service worker.">
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+  <link rel="stylesheet" href="./css/main.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand-link" href="./index.html">
+        <img class="brand-mark" src="./assets/favicon.svg" alt="MUJAHI mark">
+        <span>MUJAHI Chess Engine</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a class="nav-link" href="./index.html">Overview</a>
+        <a class="nav-link" href="./analysis.html">Analysis</a>
+        <a class="nav-link" href="./api.html">API Docs</a>
+        <a class="nav-link" href="./status.html">Status</a>
+        <a class="nav-link" href="./extension.html" aria-current="page">Chess Helper</a>
+      </nav>
+      <div class="header-actions">
+        <a class="btn btn-primary btn-sm" href="./analysis.html">Test Engine</a>
+        <button id="mobile-menu-toggle" class="mobile-menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Toggle navigation menu">☰</button>
+      </div>
+    </div>
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile navigation">
+      <a class="nav-link" href="./index.html">Overview</a>
+      <a class="nav-link" href="./analysis.html">Analysis</a>
+      <a class="nav-link" href="./api.html">API Docs</a>
+      <a class="nav-link" href="./status.html">Status</a>
+      <a class="nav-link" href="./extension.html" aria-current="page">Chess Helper</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="page-header">
+      <div class="container">
+        <p class="eyebrow">CHROME EXTENSION INTEGRATION · CHESS HELPER <span id="extension-target-version">2.1.0</span></p>
+        <h1 class="page-title">Chess Helper Multi-Provider Architecture</h1>
+        <p class="page-subtitle">
+          Adds <strong>MUJAHI API</strong> as a third selectable provider alongside Chess Helper 2.1.0's existing <strong>Hosted API (StockfishOnline)</strong> default and <strong>Local WASM (Stockfish 19 Lite)</strong> modes.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container" style="display: grid; gap: 22px;">
+        <div class="card">
+          <h2 class="card-title">Package &amp; Adapter Availability</h2>
+          <div id="extension-download-area" style="margin-top: 12px;"></div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">Selectable Providers in Chess Helper 2.1.0</h2>
+          <div class="table-wrap" style="margin-top: 12px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Provider Key</th>
+                  <th>UI Label</th>
+                  <th>Execution Path</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono">'api'</td>
+                  <td><strong>Hosted API (StockfishOnline)</strong></td>
+                  <td>Direct fetch to <code>stockfish.online/api/s/v2.php</code></td>
+                  <td>Preserved as default</td>
+                </tr>
+                <tr>
+                  <td class="mono">'wasm'</td>
+                  <td><strong>Local WASM (Stockfish 19 Lite)</strong></td>
+                  <td>Extension-origin <code>engine/host.html</code> dedicated worker</td>
+                  <td>Preserved as bundled</td>
+                </tr>
+                <tr>
+                  <td class="mono">'mujahi'</td>
+                  <td><strong>MUJAHI API (Stockfish 19)</strong></td>
+                  <td>MV3 Background Service Worker → Render Docker API (SSE + JSON)</td>
+                  <td>Added via <code>examples/</code> adapter</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <article class="card">
+            <h3 class="card-title">MV3 Service Worker Transport</h3>
+            <p class="card-copy">
+              Content scripts on Chess.com send FEN requests to the extension's Manifest V3 service worker (<code>examples/extension-background.js</code>). Because the extension declares Render's origin in <code>manifest.json</code> <code>host_permissions</code>, your Render API does not need to expose Chess.com in browser CORS.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3 class="card-title">Normalized Arrow &amp; SuperMode Contract</h3>
+            <p class="card-copy">
+              <code>examples/extension-provider.js</code> outputs Chess Helper's exact <code>engineAnalysisCache</code> object shape: <code>{ move, evaluation, mate, continuation, depth, raw }</code> with White-POV scores and stale-position rejection, so D5/D10/D15 arrows, mate detector, and SuperMode work identically.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>MUJAHI Chess Engine API · Wrapper MIT · Stockfish 19 GPL-3.0</span>
+      <div class="footer-links">
+        <a href="./index.html">Overview</a>
+        <a href="./analysis.html">Analysis</a>
+        <a href="./api.html">API Docs</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./config.js"></script>
+  <script src="./js/api-client.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>

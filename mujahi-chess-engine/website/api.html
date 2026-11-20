@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Documentation — MUJAHI Chess Engine</title>
+  <meta name="description" content="REST and SSE API contract for MUJAHI Chess Engine API powered by Stockfish 19.">
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+  <link rel="stylesheet" href="./css/main.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand-link" href="./index.html">
+        <img class="brand-mark" src="./assets/favicon.svg" alt="MUJAHI mark">
+        <span>MUJAHI Chess Engine</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a class="nav-link" href="./index.html">Overview</a>
+        <a class="nav-link" href="./analysis.html">Analysis</a>
+        <a class="nav-link" href="./api.html" aria-current="page">API Docs</a>
+        <a class="nav-link" href="./status.html">Status</a>
+        <a class="nav-link" href="./extension.html">Chess Helper</a>
+      </nav>
+      <div class="header-actions">
+        <a class="btn btn-primary btn-sm" href="./analysis.html">Try Live</a>
+        <button id="mobile-menu-toggle" class="mobile-menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Toggle navigation menu">☰</button>
+      </div>
+    </div>
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile navigation">
+      <a class="nav-link" href="./index.html">Overview</a>
+      <a class="nav-link" href="./analysis.html">Analysis</a>
+      <a class="nav-link" href="./api.html" aria-current="page">API Docs</a>
+      <a class="nav-link" href="./status.html">Status</a>
+      <a class="nav-link" href="./extension.html">Chess Helper</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="page-header">
+      <div class="container">
+        <p class="eyebrow">HTTP + SERVER-SENT EVENTS CONTRACT</p>
+        <h1 class="page-title">API Reference</h1>
+        <p class="page-subtitle">
+          Base URL: <code class="mono" data-api-base-url>https://mujahi-chess.onrender.com</code>. Evaluation values are normalized to White's perspective in pawns (<code>+</code> favors White, <code>-</code> favors Black).
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container" style="display: grid; gap: 24px;">
+        <div class="card">
+          <h2 class="card-title">Endpoints</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Method &amp; Path</th>
+                  <th>Transport</th>
+                  <th>Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono">GET /health</td>
+                  <td>JSON</td>
+                  <td>Container readiness, engine state, queue load, RSS memory, and uptime.</td>
+                </tr>
+                <tr>
+                  <td class="mono">GET /v1/engine</td>
+                  <td>JSON</td>
+                  <td>Pinned Stockfish 19 tag, commit hash, SFNNv16 default net, and runtime limits.</td>
+                </tr>
+                <tr>
+                  <td class="mono">POST /v1/analyze</td>
+                  <td>JSON</td>
+                  <td>Runs one iterative deepening search and returns all requested depth snapshots together.</td>
+                </tr>
+                <tr>
+                  <td class="mono">POST /v1/analyze/stream</td>
+                  <td>SSE</td>
+                  <td>Emits <code>started</code>, progressive <code>snapshot</code> events as each depth completes, and <code>complete</code>.</td>
+                </tr>
+                <tr>
+                  <td class="mono">GET /v1/analyze/stream</td>
+                  <td>SSE</td>
+                  <td>Query-parameter SSE variant (<code>?fen=...&amp;depths=5,10,15&amp;clientSessionId=...</code>) for EventSource clients.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="code-header">
+              <h2 class="card-title" style="margin: 0;">Request: POST /v1/analyze</h2>
+              <button type="button" class="btn btn-secondary btn-sm" data-copy-target="doc-curl">Copy</button>
+            </div>
+            <pre id="doc-curl" class="code-block">curl -X POST https://mujahi-chess.onrender.com/v1/analyze \
+  -H "Content-Type: application/json" \
+  -H "X-Client-Session-Id: client-tab-01" \
+  -d '{
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "depths": [5, 10, 15],
+    "timeoutMs": 45000
+  }'</pre>
+          </div>
+
+          <div class="card">
+            <div class="code-header">
+              <h2 class="card-title" style="margin: 0;">Response Shape</h2>
+              <button type="button" class="btn btn-secondary btn-sm" data-copy-target="doc-json">Copy</button>
+            </div>
+            <pre id="doc-json" class="code-block">{
+  "success": true,
+  "engine": "MUJAHI Stockfish 19",
+  "version": "Stockfish 19",
+  "tag": "sf_19",
+  "commit": "edb0d9db6731067ec50ce619ff372b463bc4dd5d",
+  "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "sideToMove": "w",
+  "bestmove": "e2e4",
+  "ponder": "e7e5",
+  "terminal": false,
+  "cached": false,
+  "deduplicated": false,
+  "results": {
+    "5":  { "depth": 5,  "bestmove": "e2e4", "evaluation": 0.34, "mate": null, "continuation": "e2e4 e7e5" },
+    "10": { "depth": 10, "bestmove": "e2e4", "evaluation": 0.31, "mate": null, "continuation": "e2e4 c7c5 g1f3" },
+    "15": { "depth": 15, "bestmove": "e2e4", "evaluation": 0.29, "mate": null, "continuation": "e2e4 e7e5 g1f3 b8c6" }
+  }
+}</pre>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">Scheduler &amp; Validation Guarantees</h2>
+          <ul style="margin: 8px 0 0; padding-left: 18px; color: var(--text-secondary); display: grid; gap: 8px;">
+            <li><strong>Session Isolation:</strong> Sending a new FEN with the same <code>X-Client-Session-Id</code> (or body <code>clientSessionId</code>) cancels only that client's stale queued/active search. Other users are unaffected.</li>
+            <li><strong>FEN Deduplication:</strong> Concurrent identical FEN requests share the active calculation rather than spawning redundant searches.</li>
+            <li><strong>Strict FEN Checks:</strong> Newline injection, invalid piece placement, missing/adjacent kings, side-not-to-move already in check, and illegal castling or en passant geometry return HTTP <code>400</code> before Stockfish receives input.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>MUJAHI Chess Engine API · Wrapper MIT · Stockfish 19 GPL-3.0</span>
+      <div class="footer-links">
+        <a href="./index.html">Overview</a>
+        <a href="./analysis.html">Analysis</a>
+        <a href="./extension.html">Chess Helper</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./config.js"></script>
+  <script src="./js/api-client.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>

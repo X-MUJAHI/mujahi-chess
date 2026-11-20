@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+api/node_modules/
+
+# Environment files
+.env
+.env.local
+api/.env
+api/.env.local
+
+# Logs and test artifacts
+*.log
+npm-debug.log*
+coverage/
+.nyc_output/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local compiled binaries
+api/bin/
+stockfish
+*.nnue
