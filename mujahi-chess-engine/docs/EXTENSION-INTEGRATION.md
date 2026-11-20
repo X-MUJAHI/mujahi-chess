@@ -10,14 +10,14 @@ In Chess Helper 2.1.0:
 - `ui.js` renders `#ch-engine-settings-overlay` with radio inputs `input[name="ch-engine-provider"]`.
 - `engine.js` exposes `getEngineProvider()`, `setEngineProvider(provider)`, `fetchEngineBestMove(fen, depth, signal)`, stores normalized objects in `engineAnalysisCache`, and notifies SuperMode via `handleSuperModeEngineAnalysis(fen, analysis)`.
 
-Adding MUJAHI uses a Manifest V3 background service worker so requests to Render never rely on Chess.com CORS rules:
+Adding MUJAHI uses a Manifest V3 background service worker so requests to Render never rely on Chess.com CORS rules (`CORS_ALLOW_EXTENSIONS=true` on the backend explicitly permits `chrome-extension://<id>` service worker origins while continuing to reject `https://www.chess.com`):
 
 ```
 Chess.com tab (engine.js + examples/extension-provider.js)
    │  chrome.runtime.connect({ name: 'mujahi-analysis-stream' })
    ▼
 MV3 Background Service Worker (examples/extension-background.js)
-   │  POST https://<render-url>/v1/analyze/stream (authorized by host_permissions)
+   │  POST https://<render-url>/v1/analyze/stream (authorized by host_permissions + CORS_ALLOW_EXTENSIONS=true)
    ▼
 MUJAHI API Container (Stockfish 19 sf_19)
 ```

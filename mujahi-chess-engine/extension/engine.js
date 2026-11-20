@@ -38,6 +38,7 @@ const localWasmSearches = new Map();
 
 const MUJAHI_DEFAULT_API_URL = 'https://mujahi-chess.onrender.com';
 let mujahiProvider = null;
+let hasShownMujahiError = false;
 
 function normalizeEngineProvider(provider) {
     if (provider === 'wasm') return 'wasm';
@@ -48,13 +49,21 @@ function getEngineProvider() {
     const provider = window.chessHelper?.engineProvider || localStorage.getItem('ch_engine_provider') || 'api';
     return normalizeEngineProvider(provider);
 }
+function getMujahiBaseUrl() {
+    let baseUrl = MUJAHI_DEFAULT_API_URL;
+    try {
+        const custom = localStorage.getItem('ch_mujahi_api_url');
+        if (custom && /^https?:\/\//i.test(custom.trim())) baseUrl = custom.trim().replace(/\/+$/, '');
+    } catch (_) {}
+    return baseUrl;
+}
 function getMujahiProvider() {
+    const baseUrl = getMujahiBaseUrl();
+    if (mujahiProvider && mujahiProvider.baseUrl !== baseUrl) {
+        mujahiProvider.cancelAll();
+        mujahiProvider = null;
+    }
     if (!mujahiProvider && window.MujahiExtensionAdapter?.MujahiExtensionProvider) {
-        let baseUrl = MUJAHI_DEFAULT_API_URL;
-        try {
-            const custom = localStorage.getItem('ch_mujahi_api_url');
-            if (custom && /^https?:\/\//i.test(custom.trim())) baseUrl = custom.trim().replace(/\/+$/, '');
-        } catch (_) {}
         mujahiProvider = new window.MujahiExtensionAdapter.MujahiExtensionProvider({
             baseUrl,
             debounceMs: 25,
@@ -63,6 +72,57 @@ function getMujahiProvider() {
         });
     }
     return mujahiProvider;
+}
+function testMujahiHealth() {
+    const baseUrl = getMujahiBaseUrl();
+    return new Promise((resolve) => {
+        if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+            resolve({ ok: false, status: 0, error: 'Chrome extension runtime bridge unavailable. Reload page.' });
+            return;
+        }
+        chrome.runtime.sendMessage({ type: 'MUJAHI_HEALTH', baseUrl }, (res) => {
+            const lastErr = chrome.runtime.lastError;
+            if (lastErr) {
+                resolve({ ok: false, status: 0, error: lastErr.message });
+                return;
+            }
+            resolve(res || { ok: false, status: 0, error: 'No response from MV3 background worker.' });
+        });
+    });
+}
+function handleMujahiError(error) {
+    const code = error?.code || '';
+    const status = Number(error?.status) || 0;
+    const message = error?.message || 'MUJAHI analysis request failed.';
+    if (error?.name === 'AbortError') return null;
+
+    // Transient mid-drag DOM animation positions should simply retry on next cycle without a modal
+    if (code === 'INVALID_FEN') {
+        log(`MUJAHI skipped transient board state: ${message}`);
+        return null;
+    }
+
+    log(`MUJAHI error (${code || status || 'network'}): ${message}`);
+    const isCors = status === 403 || code === 'CORS_FORBIDDEN';
+    const isTerminalClient = isCors || status === 400 || status === 401 || status === 404 || code === 'INVALID_DEPTH';
+
+    if (!hasShownMujahiError && window.showCustomModal) {
+        hasShownMujahiError = true;
+        const extId = error?.extensionId || (typeof chrome !== 'undefined' ? chrome.runtime?.id : '') || '<extension-id>';
+        if (isCors) {
+            window.showCustomModal(
+                'MUJAHI API Blocked by CORS (403)',
+                `Your Render backend rejected requests from extension origin chrome-extension://${extId}.\n\nQuick fix: in Render Dashboard -> Environment -> add chrome-extension://${extId} to CORS_ALLOWED_ORIGINS (or redeploy the updated backend with CORS_ALLOW_EXTENSIONS=true).`
+            );
+        } else {
+            window.showCustomModal(
+                'MUJAHI API Error',
+                `${message} (If Render Free tier just woke up, wait 30s and click the Refresh icon, or switch provider in Engine Settings.)`
+            );
+        }
+    }
+
+    return isTerminalClient ? false : null;
 }
 function getLocalEngineOrigin() {
     if (typeof chrome === 'undefined' || !chrome.runtime?.getURL) throw new Error('Chrome extension runtime is unavailable.');
@@ -500,19 +560,30 @@ async function fetchEngineBestMove(fen, depth, signal = null) {
         }
         if (provider === 'mujahi') {
             const adapter = getMujahiProvider();
-            if (!adapter) throw new Error('MUJAHI provider adapter is not loaded.');
-            const move = await adapter.fetchBestMove(fen, depth, signal, (analysis) => {
-                const prior = engineAnalysisCache.get(fen);
-                if (!prior || analysis.depth >= (prior.depth || 0)) {
-                    setBoundedCache(engineAnalysisCache, fen, analysis, 120);
-                    handleSuperModeEngineAnalysis(fen, analysis);
+            if (!adapter) {
+                return handleMujahiError(new Error('MUJAHI provider adapter failed to load. Reload the extension in chrome://extensions.'));
+            }
+            try {
+                const move = await adapter.fetchBestMove(fen, depth, signal, (analysis) => {
+                    hasShownMujahiError = false;
+                    const prior = engineAnalysisCache.get(fen);
+                    if (!prior || analysis.depth >= (prior.depth || 0)) {
+                        setBoundedCache(engineAnalysisCache, fen, analysis, 120);
+                        handleSuperModeEngineAnalysis(fen, analysis);
+                    }
+                    if (analysis.move) {
+                        setBoundedCache(fenCache, `mujahi|${fen}|${analysis.depth}`, analysis.move);
+                    }
+                });
+                if (move) {
+                    hasShownMujahiError = false;
+                    setBoundedCache(fenCache, cacheKey, move);
                 }
-                if (analysis.move) {
-                    setBoundedCache(fenCache, `mujahi|${fen}|${analysis.depth}`, analysis.move);
-                }
-            });
-            if (move) setBoundedCache(fenCache, cacheKey, move);
-            return move;
+                return move;
+            } catch (err) {
+                if (err?.name === 'AbortError' || signal?.aborted) return null;
+                return handleMujahiError(err);
+            }
         }
         const url = `https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}`;
         const data = await fetchJsonWithRetry(url, signal ? { signal } : {}, `Stockfish API depth ${depth}`);
@@ -585,6 +656,9 @@ function setEngineProvider(provider) {
     } else if (next === 'wasm' && localEngineFailure) {
         resetLocalEngineRuntime({ terminate: false, error: localEngineAbortError() });
         hasShownLocalEngineError = false;
+    }
+    if (next === 'mujahi') {
+        hasShownMujahiError = false;
     }
     setTimeout(() => scheduleTurnCheck(), 0);
     const providerLabel = next === 'wasm'
@@ -1322,6 +1396,7 @@ window.chessHelperEngine = {
     fetchDatabaseBestMove: fetchDatabaseBestMove,
     setEngineProvider: setEngineProvider,
     getEngineProvider: getEngineProvider,
+    testMujahiHealth: testMujahiHealth,
     getMyColor: getMyColor,
     refreshSuperMode: refreshSuperMode,
     reviewSuperModeSession: reviewSuperModeSession,

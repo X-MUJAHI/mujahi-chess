@@ -26,6 +26,15 @@ function normalizeBaseUrl(baseUrl) {
   return clean.replace(/\/+$/, '');
 }
 
+function buildApiError(status, payload, fallbackLabel) {
+  const code = payload?.error?.code || '';
+  const baseMessage = payload?.error?.message || `HTTP ${status} from ${fallbackLabel}`;
+  const err = new Error(code ? `[${code}] ${baseMessage}` : baseMessage);
+  err.status = status;
+  err.code = code || (status ? `HTTP_${status}` : 'NETWORK_ERROR');
+  return err;
+}
+
 async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, signal }) {
   const sessionId = clientSessionId || getSessionId();
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze`;
@@ -47,7 +56,7 @@ async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, s
 
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error(payload?.error?.message || `HTTP ${res.status} from MUJAHI API`);
+    throw buildApiError(res.status, payload, 'MUJAHI API');
   }
   return payload;
 }
@@ -73,7 +82,7 @@ async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId,
 
   if (!res.ok) {
     const errPayload = await res.json().catch(() => null);
-    throw new Error(errPayload?.error?.message || `HTTP ${res.status} from MUJAHI stream`);
+    throw buildApiError(res.status, errPayload, 'MUJAHI stream');
   }
 
   if (!res.body) {
@@ -188,6 +197,9 @@ chrome.runtime.onConnect.addListener((port) => {
             type: 'sse_error',
             requestId: msg.requestId,
             message: err?.message || 'MUJAHI stream failed',
+            status: err?.status || 0,
+            code: err?.code || '',
+            extensionId: chrome.runtime?.id || '',
           });
         }
       } finally {
@@ -208,10 +220,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     fetch(`${baseUrl}/health`, { headers: { Accept: 'application/json' } })
       .then(async (res) => {
         const payload = await res.json().catch(() => null);
-        sendResponse({ ok: res.ok, status: res.status, payload });
+        sendResponse({
+          ok: res.ok,
+          status: res.status,
+          payload,
+          extensionId: chrome.runtime?.id || '',
+        });
       })
       .catch((err) => {
-        sendResponse({ ok: false, status: 0, error: err?.message || 'Health request failed' });
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: err?.message || 'Health request failed',
+          extensionId: chrome.runtime?.id || '',
+        });
       });
     return true;
   }
@@ -227,7 +249,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       signal: controller.signal,
     })
       .then((payload) => sendResponse({ ok: true, payload }))
-      .catch((err) => sendResponse({ ok: false, error: err?.message || 'MUJAHI JSON request failed' }));
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err?.message || 'MUJAHI JSON request failed',
+          status: err?.status || 0,
+          code: err?.code || '',
+          extensionId: chrome.runtime?.id || '',
+        })
+      );
     return true;
   }
 

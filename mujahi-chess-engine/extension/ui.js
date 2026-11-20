@@ -306,6 +306,10 @@ function initUI() {
                     <span><strong>Local WASM</strong><small>Stockfish 19 Lite · Runs on this device · Engine files ~1.87 MB</small></span>
                 </label>
             </section>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 2px 6px;">
+                <span id="ch-mujahi-status" style="font-size:10px; color:var(--ch-text-secondary);">MUJAHI status: ready to test</span>
+                <button type="button" id="ch-btn-test-mujahi" class="ch-btn ch-btn-secondary" style="flex:0 0 auto; padding:5px 10px; font-size:10px; border-radius:8px;">Test MUJAHI</button>
+            </div>
             <p class="ch-engine-provider-note">Switch anytime between Hosted API, MUJAHI API (progressive D5/D10/D15 SSE stream), or Local WASM (requires the two Stockfish files in <code>engine/</code>).</p>
         </div>`;
 
@@ -372,7 +376,41 @@ function setupButtonEvents() {
 
     const engineSettingsOverlay = document.getElementById('ch-engine-settings-overlay');
     const closeEngineSettings = () => engineSettingsOverlay.classList.remove('visible');
-    document.getElementById('ch-btn-engine-settings').addEventListener('click', () => engineSettingsOverlay.classList.add('visible'), { signal: uiAbortController?.signal });
+    const mujahiStatusEl = document.getElementById('ch-mujahi-status');
+    const mujahiTestBtn = document.getElementById('ch-btn-test-mujahi');
+    const runMujahiHealthCheck = async () => {
+        if (!mujahiStatusEl) return;
+        mujahiStatusEl.style.color = 'var(--ch-text-secondary)';
+        mujahiStatusEl.textContent = 'MUJAHI status: checking...';
+        if (mujahiTestBtn) mujahiTestBtn.disabled = true;
+        try {
+            const res = window.chessHelperEngine?.testMujahiHealth
+                ? await window.chessHelperEngine.testMujahiHealth()
+                : { ok: false, error: 'Engine helper not ready.' };
+            if (res?.ok && res.payload?.engine?.ready) {
+                const eng = res.payload.engine;
+                mujahiStatusEl.style.color = '#4ade80';
+                mujahiStatusEl.textContent = `MUJAHI online · ${eng.version || 'Stockfish 19'} (${eng.tag || 'sf_19'})`;
+            } else {
+                mujahiStatusEl.style.color = '#f87171';
+                mujahiStatusEl.textContent = `MUJAHI error: ${res?.error || res?.payload?.error?.message || `HTTP ${res?.status || 0}`}`;
+            }
+        } catch (err) {
+            mujahiStatusEl.style.color = '#f87171';
+            mujahiStatusEl.textContent = `MUJAHI error: ${err?.message || 'Check failed'}`;
+        } finally {
+            if (mujahiTestBtn) mujahiTestBtn.disabled = false;
+        }
+    };
+    if (mujahiTestBtn) {
+        mujahiTestBtn.addEventListener('click', runMujahiHealthCheck, { signal: uiAbortController?.signal });
+    }
+    document.getElementById('ch-btn-engine-settings').addEventListener('click', () => {
+        engineSettingsOverlay.classList.add('visible');
+        if (normalizeEngineProvider(window.chessHelper.engineProvider) === 'mujahi') {
+            runMujahiHealthCheck();
+        }
+    }, { signal: uiAbortController?.signal });
     document.getElementById('ch-engine-settings-close').addEventListener('click', closeEngineSettings, { signal: uiAbortController?.signal });
     engineSettingsOverlay.addEventListener('click', (e) => { if (e.target === engineSettingsOverlay) closeEngineSettings(); }, { signal: uiAbortController?.signal });
     engineSettingsOverlay.querySelectorAll('input[name="ch-engine-provider"]').forEach(input => {

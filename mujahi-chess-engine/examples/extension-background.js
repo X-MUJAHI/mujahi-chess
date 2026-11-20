@@ -5,8 +5,11 @@
  *   "background": { "service_worker": "engine/mujahi-background.js" },
  *   "host_permissions": [ "https://mujahi-chess.onrender.com/*", ...existing hosts ]
  *
- * Performing requests here avoids exposing Chess.com in backend CORS allowlists
- * and keeps progressive SSE streaming independent of page CSP restrictions.
+ * Performing requests here keeps progressive SSE streaming independent of
+ * Chess.com page CSP rules and isolates extension traffic from arbitrary web origins.
+ * Note: Ensure the MUJAHI API enables `CORS_ALLOW_EXTENSIONS=true` (or includes
+ * `chrome-extension://<extension-id>` in `CORS_ALLOWED_ORIGINS`) because Chromium
+ * MV3 service workers attach `Origin: chrome-extension://<id>` on POST requests.
  */
 'use strict';
 
@@ -29,19 +32,29 @@ function normalizeBaseUrl(baseUrl) {
   return clean.replace(/\/+$/, '');
 }
 
+function buildApiError(status, payload, fallbackLabel) {
+  const code = payload?.error?.code || '';
+  const baseMessage = payload?.error?.message || `HTTP ${status} from ${fallbackLabel}`;
+  const err = new Error(code ? `[${code}] ${baseMessage}` : baseMessage);
+  err.status = status;
+  err.code = code || (status ? `HTTP_${status}` : 'NETWORK_ERROR');
+  return err;
+}
+
 async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, signal }) {
+  const sessionId = clientSessionId || getSessionId();
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      'X-Client-Session-Id': clientSessionId || getSessionId(),
+      'X-Client-Session-Id': sessionId,
     },
     body: JSON.stringify({
       fen,
       depths,
-      clientSessionId: clientSessionId || getSessionId(),
+      clientSessionId: sessionId,
       ...(timeoutMs ? { timeoutMs } : {}),
     }),
     signal,
@@ -49,24 +62,25 @@ async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, s
 
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error(payload?.error?.message || `HTTP ${res.status} from MUJAHI API`);
+    throw buildApiError(res.status, payload, 'MUJAHI API');
   }
   return payload;
 }
 
 async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId, signal, onEvent }) {
+  const sessionId = clientSessionId || getSessionId();
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze/stream`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
-      'X-Client-Session-Id': clientSessionId || getSessionId(),
+      'X-Client-Session-Id': sessionId,
     },
     body: JSON.stringify({
       fen,
       depths,
-      clientSessionId: clientSessionId || getSessionId(),
+      clientSessionId: sessionId,
       ...(timeoutMs ? { timeoutMs } : {}),
     }),
     signal,
@@ -74,7 +88,7 @@ async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId,
 
   if (!res.ok) {
     const errPayload = await res.json().catch(() => null);
-    throw new Error(errPayload?.error?.message || `HTTP ${res.status} from MUJAHI stream`);
+    throw buildApiError(res.status, errPayload, 'MUJAHI stream');
   }
 
   if (!res.body) {
@@ -84,32 +98,49 @@ async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId,
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let sawTerminalEvent = false;
+
+  const flushBlock = (block) => {
+    let event = 'message';
+    const dataLines = [];
+    for (const line of block.split('\n')) {
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    if (!dataLines.length) return;
+
+    try {
+      const data = JSON.parse(dataLines.join('\n'));
+      if (event === 'complete' || event === 'error') {
+        sawTerminalEvent = true;
+      }
+      onEvent(event, data);
+    } catch {
+      // Ignore malformed SSE comment/keepalive chunk
+    }
+  };
 
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
     let splitIdx;
     while ((splitIdx = buffer.indexOf('\n\n')) !== -1) {
       const block = buffer.slice(0, splitIdx);
       buffer = buffer.slice(splitIdx + 2);
-
-      let event = 'message';
-      const dataLines = [];
-      for (const line of block.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-      }
-      if (!dataLines.length) continue;
-
-      try {
-        const data = JSON.parse(dataLines.join('\n'));
-        onEvent(event, data);
-      } catch {
-        // Ignore malformed SSE comment/keepalive chunk
-      }
+      if (block.trim()) flushBlock(block);
     }
+  }
+
+  buffer += decoder.decode().replace(/\r\n/g, '\n');
+  if (buffer.trim()) {
+    flushBlock(buffer);
+  }
+
+  if (!sawTerminalEvent && !signal?.aborted) {
+    throw new Error('MUJAHI SSE stream closed unexpectedly.');
   }
 }
 
@@ -151,8 +182,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
     if (msg.type === 'analyze_stream') {
       if (activeController) activeController.abort();
-      activeController = new AbortController();
-      const { signal } = activeController;
+      const controller = new AbortController();
+      activeController = controller;
 
       try {
         await analyzeStream({
@@ -161,21 +192,26 @@ chrome.runtime.onConnect.addListener((port) => {
           depths: msg.depths,
           timeoutMs: msg.timeoutMs,
           clientSessionId: msg.clientSessionId,
-          signal,
+          signal: controller.signal,
           onEvent: (event, data) => {
             safePost({ type: 'sse_event', requestId: msg.requestId, event, data });
           },
         });
       } catch (err) {
-        if (err.name !== 'AbortError') {
+        if (err?.name !== 'AbortError' && !disconnected) {
           safePost({
             type: 'sse_error',
             requestId: msg.requestId,
-            message: err.message || 'MUJAHI stream failed',
+            message: err?.message || 'MUJAHI stream failed',
+            status: err?.status || 0,
+            code: err?.code || '',
+            extensionId: chrome.runtime?.id || '',
           });
         }
       } finally {
-        activeController = null;
+        if (activeController === controller) {
+          activeController = null;
+        }
       }
     }
   });
@@ -190,10 +226,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     fetch(`${baseUrl}/health`, { headers: { Accept: 'application/json' } })
       .then(async (res) => {
         const payload = await res.json().catch(() => null);
-        sendResponse({ ok: res.ok, status: res.status, payload });
+        sendResponse({
+          ok: res.ok,
+          status: res.status,
+          payload,
+          extensionId: chrome.runtime?.id || '',
+        });
       })
       .catch((err) => {
-        sendResponse({ ok: false, status: 0, error: err.message });
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: err?.message || 'Health request failed',
+          extensionId: chrome.runtime?.id || '',
+        });
       });
     return true;
   }
@@ -209,7 +255,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       signal: controller.signal,
     })
       .then((payload) => sendResponse({ ok: true, payload }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }));
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err?.message || 'MUJAHI JSON request failed',
+          status: err?.status || 0,
+          code: err?.code || '',
+          extensionId: chrome.runtime?.id || '',
+        })
+      );
     return true;
   }
 

@@ -25,28 +25,102 @@
     return err;
   }
 
+  function extractUciMove(rawMove) {
+    if (!rawMove) return '';
+    const trimmed = String(rawMove).trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('bestmove ')) {
+      return trimmed.split(/\s+/)[1] || '';
+    }
+    return trimmed.split(/\s+/)[0] || '';
+  }
+
+  function makeProviderError(message, { status = 0, code = '', extensionId = '' } = {}) {
+    const err = new Error(message || 'MUJAHI request failed');
+    if (status) err.status = status;
+    if (code) err.code = code;
+    if (extensionId) err.extensionId = extensionId;
+    return err;
+  }
+
   /**
    * Normalizes a single MUJAHI depth snapshot or top-level response into
    * the exact shape expected by Chess Helper 2.1.0 `engineAnalysisCache`.
    */
   function normalizeMujahiSnapshot(snapshot, rawPayload = null) {
-    if (!snapshot || !snapshot.bestmove) return null;
+    if (!snapshot) return null;
+    const move = extractUciMove(snapshot.bestmove || snapshot.move);
+    if (!move || move === '(none)' || move === '0000') return null;
+
     const rawEval = snapshot.evaluation ?? snapshot.eval ?? snapshot.score;
-    const evaluation =
-      rawEval === null || rawEval === undefined || rawEval === '' ? null : Number(rawEval);
-    const mate =
+    let evaluation = null;
+    let mate =
       snapshot.mate === null || snapshot.mate === undefined || snapshot.mate === '' || snapshot.mate === 'null'
         ? null
         : Number(snapshot.mate);
 
+    if (rawEval && typeof rawEval === 'object') {
+      if (rawEval.type === 'cp' && rawEval.value !== null && rawEval.value !== undefined) {
+        const parsedCp = Number(rawEval.value);
+        if (Number.isFinite(parsedCp)) evaluation = parsedCp;
+      } else if (rawEval.type === 'mate' && mate === null && rawEval.value !== null && rawEval.value !== undefined) {
+        const parsedMate = Number(rawEval.value);
+        if (Number.isFinite(parsedMate)) mate = parsedMate;
+      }
+    } else if (rawEval !== null && rawEval !== undefined && rawEval !== '') {
+      const parsedEval = Number(rawEval);
+      if (Number.isFinite(parsedEval)) evaluation = parsedEval;
+    }
+
+    const continuation =
+      typeof snapshot.continuation === 'string'
+        ? snapshot.continuation
+        : Array.isArray(snapshot.pv)
+          ? snapshot.pv.join(' ')
+          : '';
+
     return {
-      move: String(snapshot.bestmove).trim(),
+      move,
       evaluation: Number.isFinite(evaluation) ? evaluation : null,
       mate: Number.isFinite(mate) ? mate : null,
-      continuation: typeof snapshot.continuation === 'string' ? snapshot.continuation : '',
+      continuation,
       depth: Number(snapshot.depth) || 0,
       raw: rawPayload || snapshot,
     };
+  }
+
+  function findResultForDepth(results, targetDepth) {
+    if (Array.isArray(results)) {
+      return results.find((item) => Number(item?.depth) === targetDepth) || null;
+    }
+    if (results && typeof results === 'object') {
+      return results[String(targetDepth)] || null;
+    }
+    return null;
+  }
+
+  function getDeepestResult(results) {
+    if (Array.isArray(results)) {
+      let best = null;
+      for (const item of results) {
+        if (!item) continue;
+        if (!best || (Number(item.depth) || 0) >= (Number(best.depth) || 0)) {
+          best = item;
+        }
+      }
+      return best;
+    }
+    if (results && typeof results === 'object') {
+      let best = null;
+      for (const item of Object.values(results)) {
+        if (!item) continue;
+        if (!best || (Number(item.depth) || 0) >= (Number(best.depth) || 0)) {
+          best = item;
+        }
+      }
+      return best;
+    }
+    return null;
   }
 
   class MujahiExtensionProvider {
@@ -215,6 +289,41 @@
       }
     }
 
+    _settleCompletedPayload(batch, depths, payload) {
+      if (batch.cancelled || (this.currentFen && this.currentFen !== batch.fen)) {
+        return;
+      }
+      const results = payload?.results;
+      for (const d of depths) {
+        const snap = findResultForDepth(results, d);
+        if (snap) {
+          this._resolveDepthWaiters(batch, snap, payload);
+        }
+      }
+
+      // If search finished early (e.g. forced mate found before requested depth or terminal checkmate),
+      // settle any remaining depth waiters using the deepest captured snapshot or top-level bestmove.
+      const fallbackSnap =
+        getDeepestResult(results) ||
+        (payload?.bestmove ? { depth: 0, bestmove: payload.bestmove, evaluation: null, mate: null } : null);
+      const fallbackNormalized = fallbackSnap ? normalizeMujahiSnapshot(fallbackSnap, payload) : null;
+
+      for (const waiter of batch.waiters) {
+        if (!waiter.settled) {
+          waiter.settled = true;
+          if (fallbackNormalized) {
+            if (typeof waiter.onNormalizedAnalysis === 'function') {
+              waiter.onNormalizedAnalysis(fallbackNormalized);
+            }
+            waiter.resolve(fallbackNormalized.move);
+          } else {
+            // Clean terminal position (no legal moves, e.g. checkmate/stalemate)
+            waiter.resolve(payload?.terminal ? false : null);
+          }
+        }
+      }
+    }
+
     _executeJsonFallback(batch, depths) {
       if (batch.cancelled || batch.waiters.every((w) => w.settled)) {
         if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
@@ -240,23 +349,16 @@
               }
               if (lastErr || !response?.ok) {
                 batch.rejectAll(
-                  new Error(lastErr?.message || response?.error || 'MUJAHI request failed')
+                  makeProviderError(lastErr?.message || response?.error || 'MUJAHI request failed', {
+                    status: response?.status || 0,
+                    code: response?.code || '',
+                    extensionId: response?.extensionId || '',
+                  })
                 );
                 if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
                 return;
               }
-              const results = response.payload?.results || {};
-              for (const d of depths) {
-                if (results[String(d)]) {
-                  this._resolveDepthWaiters(batch, results[String(d)], response.payload);
-                }
-              }
-              for (const waiter of batch.waiters) {
-                if (!waiter.settled) {
-                  waiter.settled = true;
-                  waiter.resolve(null);
-                }
-              }
+              this._settleCompletedPayload(batch, depths, response.payload);
               if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
             }
           );
@@ -316,18 +418,7 @@
               this._resolveDepthWaiters(batch, msg.data, msg.data);
             } else if (msg.event === 'complete') {
               finishedCleanly = true;
-              const results = msg.data?.results || {};
-              for (const d of depths) {
-                if (results[String(d)]) {
-                  this._resolveDepthWaiters(batch, results[String(d)], msg.data);
-                }
-              }
-              for (const waiter of batch.waiters) {
-                if (!waiter.settled) {
-                  waiter.settled = true;
-                  waiter.resolve(null);
-                }
-              }
+              this._settleCompletedPayload(batch, depths, msg.data);
               if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
               try {
                 port.disconnect();
@@ -336,7 +427,11 @@
               }
             } else if (msg.event === 'error') {
               finishedCleanly = true;
-              batch.rejectAll(new Error(msg.data?.error?.message || 'MUJAHI stream error'));
+              batch.rejectAll(
+                makeProviderError(msg.data?.error?.message || 'MUJAHI stream error', {
+                  code: msg.data?.error?.code || '',
+                })
+              );
               if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
               try {
                 port.disconnect();
@@ -346,7 +441,13 @@
             }
           } else if (msg.type === 'sse_error') {
             finishedCleanly = true;
-            batch.rejectAll(new Error(msg.message || 'MUJAHI stream failed'));
+            batch.rejectAll(
+              makeProviderError(msg.message || 'MUJAHI stream failed', {
+                status: msg.status || 0,
+                code: msg.code || '',
+                extensionId: msg.extensionId || '',
+              })
+            );
             if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
             try {
               port.disconnect();

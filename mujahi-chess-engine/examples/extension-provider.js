@@ -2,8 +2,8 @@
  * MUJAHI Chess Engine — Provider Adapter for Chess Helper 2.1.0 (SuperMode)
  *
  * Preserves existing providers:
- *   - 'api'  (Hosted API — StockfishOnline default)
- *   - 'wasm' (Local WASM — Stockfish 19 Lite worker)
+ *   - 'api'    (Hosted API — StockfishOnline default)
+ *   - 'wasm'   (Local WASM — Stockfish 19 Lite worker)
  * Adds:
  *   - 'mujahi' (MUJAHI Stockfish 19 API via MV3 background service worker)
  *
@@ -16,29 +16,111 @@
 
   const DEFAULT_API_BASE_URL = 'https://mujahi-chess.onrender.com';
 
+  function makeAbortError(message = 'Aborted') {
+    if (typeof DOMException === 'function') {
+      return new DOMException(message, 'AbortError');
+    }
+    const err = new Error(message);
+    err.name = 'AbortError';
+    return err;
+  }
+
+  function extractUciMove(rawMove) {
+    if (!rawMove) return '';
+    const trimmed = String(rawMove).trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('bestmove ')) {
+      return trimmed.split(/\s+/)[1] || '';
+    }
+    return trimmed.split(/\s+/)[0] || '';
+  }
+
+  function makeProviderError(message, { status = 0, code = '', extensionId = '' } = {}) {
+    const err = new Error(message || 'MUJAHI request failed');
+    if (status) err.status = status;
+    if (code) err.code = code;
+    if (extensionId) err.extensionId = extensionId;
+    return err;
+  }
+
   /**
    * Normalizes a single MUJAHI depth snapshot or top-level response into
    * the exact shape expected by Chess Helper 2.1.0 `engineAnalysisCache`.
    */
   function normalizeMujahiSnapshot(snapshot, rawPayload = null) {
-    if (!snapshot || !snapshot.bestmove) return null;
-    const evaluation =
-      snapshot.evaluation === null || snapshot.evaluation === undefined || snapshot.evaluation === ''
-        ? null
-        : Number(snapshot.evaluation);
-    const mate =
-      snapshot.mate === null || snapshot.mate === undefined || snapshot.mate === ''
+    if (!snapshot) return null;
+    const move = extractUciMove(snapshot.bestmove || snapshot.move);
+    if (!move || move === '(none)' || move === '0000') return null;
+
+    const rawEval = snapshot.evaluation ?? snapshot.eval ?? snapshot.score;
+    let evaluation = null;
+    let mate =
+      snapshot.mate === null || snapshot.mate === undefined || snapshot.mate === '' || snapshot.mate === 'null'
         ? null
         : Number(snapshot.mate);
 
+    if (rawEval && typeof rawEval === 'object') {
+      if (rawEval.type === 'cp' && rawEval.value !== null && rawEval.value !== undefined) {
+        const parsedCp = Number(rawEval.value);
+        if (Number.isFinite(parsedCp)) evaluation = parsedCp;
+      } else if (rawEval.type === 'mate' && mate === null && rawEval.value !== null && rawEval.value !== undefined) {
+        const parsedMate = Number(rawEval.value);
+        if (Number.isFinite(parsedMate)) mate = parsedMate;
+      }
+    } else if (rawEval !== null && rawEval !== undefined && rawEval !== '') {
+      const parsedEval = Number(rawEval);
+      if (Number.isFinite(parsedEval)) evaluation = parsedEval;
+    }
+
+    const continuation =
+      typeof snapshot.continuation === 'string'
+        ? snapshot.continuation
+        : Array.isArray(snapshot.pv)
+          ? snapshot.pv.join(' ')
+          : '';
+
     return {
-      move: snapshot.bestmove,
+      move,
       evaluation: Number.isFinite(evaluation) ? evaluation : null,
       mate: Number.isFinite(mate) ? mate : null,
-      continuation: typeof snapshot.continuation === 'string' ? snapshot.continuation : '',
+      continuation,
       depth: Number(snapshot.depth) || 0,
       raw: rawPayload || snapshot,
     };
+  }
+
+  function findResultForDepth(results, targetDepth) {
+    if (Array.isArray(results)) {
+      return results.find((item) => Number(item?.depth) === targetDepth) || null;
+    }
+    if (results && typeof results === 'object') {
+      return results[String(targetDepth)] || null;
+    }
+    return null;
+  }
+
+  function getDeepestResult(results) {
+    if (Array.isArray(results)) {
+      let best = null;
+      for (const item of results) {
+        if (!item) continue;
+        if (!best || (Number(item.depth) || 0) >= (Number(best.depth) || 0)) {
+          best = item;
+        }
+      }
+      return best;
+    }
+    if (results && typeof results === 'object') {
+      let best = null;
+      for (const item of Object.values(results)) {
+        if (!item) continue;
+        if (!best || (Number(item.depth) || 0) >= (Number(best.depth) || 0)) {
+          best = item;
+        }
+      }
+      return best;
+    }
+    return null;
   }
 
   class MujahiExtensionProvider {
@@ -49,7 +131,7 @@
       useSseStream = true,
       timeoutMs = 45000,
     } = {}) {
-      this.baseUrl = baseUrl.replace(/\/+$/, '');
+      this.baseUrl = String(baseUrl || DEFAULT_API_BASE_URL).replace(/\/+$/, '');
       this.clientSessionId =
         clientSessionId ||
         `ext_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -73,30 +155,25 @@
       for (const timer of this.batchTimers.values()) clearTimeout(timer);
       this.batchTimers.clear();
       for (const stream of this.activeStreams.values()) {
+        stream.cancelled = true;
         try {
           stream.port?.postMessage({ type: 'cancel' });
           stream.port?.disconnect();
         } catch {
           // Ignore disconnected port errors
         }
-        stream.rejectAll?.(new DOMException('Superseded by newer FEN', 'AbortError'));
+        stream.rejectAll?.(makeAbortError('Superseded by newer FEN'));
       }
       this.activeStreams.clear();
     }
 
     /**
      * Batches simultaneous D5/D10/D15 calls from Chess Helper 2.1.0 for the same FEN
-     * into ONE single-search Stockfish 19 request on the backend.
-     *
-     * @param {string} fen
-     * @param {number} depth
-     * @param {AbortSignal|null} signal
-     * @param {(analysis: object) => void} [onNormalizedAnalysis]
-     * @returns {Promise<string|null>} Best UCI move for requested depth
+     * into ONE single-search Stockfish 19 request on the MUJAHI backend.
      */
     fetchBestMove(fen, depth, signal = null, onNormalizedAnalysis = null) {
       if (signal?.aborted) {
-        return Promise.reject(new DOMException('Aborted', 'AbortError'));
+        return Promise.reject(makeAbortError('Aborted'));
       }
 
       this.currentFen = fen;
@@ -110,6 +187,7 @@
             depths: new Set(),
             waiters: [],
             started: false,
+            cancelled: false,
             port: null,
             resolvedSnapshots: new Map(),
             rejectAll: (err) => {
@@ -140,24 +218,31 @@
             () => {
               if (!waiter.settled) {
                 waiter.settled = true;
-                waiter.reject(new DOMException('Aborted', 'AbortError'));
+                waiter.reject(makeAbortError('Aborted'));
               }
               const allDone = batch.waiters.every((w) => w.settled);
               if (allDone) {
+                batch.cancelled = true;
+                const pendingTimer = this.batchTimers.get(fen);
+                if (pendingTimer) {
+                  clearTimeout(pendingTimer);
+                  this.batchTimers.delete(fen);
+                }
                 try {
                   batch.port?.postMessage({ type: 'cancel' });
                   batch.port?.disconnect();
                 } catch {
                   // Ignore
                 }
-                this.activeStreams.delete(fen);
+                if (this.activeStreams.get(fen) === batch) {
+                  this.activeStreams.delete(fen);
+                }
               }
             },
             { once: true }
           );
         }
 
-        // Already resolved in this shared batch
         if (batch.resolvedSnapshots.has(targetDepth)) {
           const snap = batch.resolvedSnapshots.get(targetDepth);
           waiter.settled = true;
@@ -179,8 +264,8 @@
     }
 
     _resolveDepthWaiters(batch, snapshot, rawPayload = null) {
-      if (this.currentFen && this.currentFen !== batch.fen) {
-        return; // Discard obsolete position result cleanly
+      if (batch.cancelled || (this.currentFen && this.currentFen !== batch.fen)) {
+        return;
       }
       const normalized = normalizeMujahiSnapshot(snapshot, rawPayload);
       if (!normalized) return;
@@ -197,14 +282,122 @@
       }
     }
 
+    _settleCompletedPayload(batch, depths, payload) {
+      if (batch.cancelled || (this.currentFen && this.currentFen !== batch.fen)) {
+        return;
+      }
+      const results = payload?.results;
+      for (const d of depths) {
+        const snap = findResultForDepth(results, d);
+        if (snap) {
+          this._resolveDepthWaiters(batch, snap, payload);
+        }
+      }
+
+      const fallbackSnap =
+        getDeepestResult(results) ||
+        (payload?.bestmove ? { depth: 0, bestmove: payload.bestmove, evaluation: null, mate: null } : null);
+      const fallbackNormalized = fallbackSnap ? normalizeMujahiSnapshot(fallbackSnap, payload) : null;
+
+      for (const waiter of batch.waiters) {
+        if (!waiter.settled) {
+          waiter.settled = true;
+          if (fallbackNormalized) {
+            if (typeof waiter.onNormalizedAnalysis === 'function') {
+              waiter.onNormalizedAnalysis(fallbackNormalized);
+            }
+            waiter.resolve(fallbackNormalized.move);
+          } else {
+            waiter.resolve(payload?.terminal ? false : null);
+          }
+        }
+      }
+    }
+
+    _executeJsonFallback(batch, depths) {
+      if (batch.cancelled || batch.waiters.every((w) => w.settled)) {
+        if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+        return;
+      }
+
+      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+        try {
+          chrome.runtime.sendMessage(
+            {
+              type: 'MUJAHI_ANALYZE_JSON',
+              baseUrl: this.baseUrl,
+              fen: batch.fen,
+              depths,
+              timeoutMs: this.timeoutMs,
+              clientSessionId: this.clientSessionId,
+            },
+            (response) => {
+              const lastErr = chrome.runtime.lastError;
+              if (batch.cancelled) {
+                if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+                return;
+              }
+              if (lastErr || !response?.ok) {
+                batch.rejectAll(
+                  makeProviderError(lastErr?.message || response?.error || 'MUJAHI request failed', {
+                    status: response?.status || 0,
+                    code: response?.code || '',
+                    extensionId: response?.extensionId || '',
+                  })
+                );
+                if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+                return;
+              }
+              this._settleCompletedPayload(batch, depths, response.payload);
+              if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+            }
+          );
+        } catch (err) {
+          batch.rejectAll(err instanceof Error ? err : new Error(String(err || 'MUJAHI message bridge failed')));
+          if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+        }
+        return;
+      }
+
+      batch.rejectAll(new Error('chrome.runtime MV3 bridge unavailable.'));
+      if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+    }
+
     _executeBatch(batch) {
+      if (batch.cancelled || batch.waiters.every((w) => w.settled)) {
+        if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+        return;
+      }
+
       batch.started = true;
       const depths = Array.from(batch.depths).sort((a, b) => a - b);
 
       if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.connect === 'function' && this.useSseStream) {
+        let port;
+        try {
+          port = chrome.runtime.connect({ name: 'mujahi-analysis-stream' });
+        } catch {
+          this._executeJsonFallback(batch, depths);
+          return;
+        }
+
         const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const port = chrome.runtime.connect({ name: 'mujahi-analysis-stream' });
         batch.port = port;
+        let finishedCleanly = false;
+
+        port.onDisconnect.addListener(() => {
+          const runtimeErr = chrome.runtime.lastError;
+          if (finishedCleanly || batch.cancelled || batch.waiters.every((w) => w.settled)) {
+            if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+            return;
+          }
+          if (batch.resolvedSnapshots.size === 0 && !runtimeErr) {
+            this._executeJsonFallback(batch, depths);
+            return;
+          }
+          batch.rejectAll(new Error(runtimeErr?.message || 'MUJAHI service worker stream disconnected.'));
+          if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
+        });
 
         port.onMessage.addListener((msg) => {
           if (!msg || msg.requestId !== requestId) return;
@@ -213,27 +406,22 @@
             if (msg.event === 'snapshot') {
               this._resolveDepthWaiters(batch, msg.data, msg.data);
             } else if (msg.event === 'complete') {
-              const results = msg.data?.results || {};
-              for (const d of depths) {
-                if (results[String(d)]) {
-                  this._resolveDepthWaiters(batch, results[String(d)], msg.data);
-                }
-              }
-              for (const waiter of batch.waiters) {
-                if (!waiter.settled) {
-                  waiter.settled = true;
-                  waiter.resolve(null);
-                }
-              }
-              this.activeStreams.delete(batch.fen);
+              finishedCleanly = true;
+              this._settleCompletedPayload(batch, depths, msg.data);
+              if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
               try {
                 port.disconnect();
               } catch {
                 // Ignore
               }
             } else if (msg.event === 'error') {
-              batch.rejectAll(new Error(msg.data?.error?.message || 'MUJAHI stream error'));
-              this.activeStreams.delete(batch.fen);
+              finishedCleanly = true;
+              batch.rejectAll(
+                makeProviderError(msg.data?.error?.message || 'MUJAHI stream error', {
+                  code: msg.data?.error?.code || '',
+                })
+              );
+              if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
               try {
                 port.disconnect();
               } catch {
@@ -241,8 +429,15 @@
               }
             }
           } else if (msg.type === 'sse_error') {
-            batch.rejectAll(new Error(msg.message || 'MUJAHI stream failed'));
-            this.activeStreams.delete(batch.fen);
+            finishedCleanly = true;
+            batch.rejectAll(
+              makeProviderError(msg.message || 'MUJAHI stream failed', {
+                status: msg.status || 0,
+                code: msg.code || '',
+                extensionId: msg.extensionId || '',
+              })
+            );
+            if (this.activeStreams.get(batch.fen) === batch) this.activeStreams.delete(batch.fen);
             try {
               port.disconnect();
             } catch {
@@ -251,57 +446,24 @@
           }
         });
 
-        port.postMessage({
-          type: 'analyze_stream',
-          requestId,
-          baseUrl: this.baseUrl,
-          fen: batch.fen,
-          depths,
-          timeoutMs: this.timeoutMs,
-          clientSessionId: this.clientSessionId,
-        });
-        return;
-      }
-
-      // Fallback to one-shot MV3 chrome.runtime.sendMessage JSON
-      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
-        chrome.runtime.sendMessage(
-          {
-            type: 'MUJAHI_ANALYZE_JSON',
+        try {
+          port.postMessage({
+            type: 'analyze_stream',
+            requestId,
             baseUrl: this.baseUrl,
             fen: batch.fen,
             depths,
             timeoutMs: this.timeoutMs,
             clientSessionId: this.clientSessionId,
-          },
-          (response) => {
-            if (chrome.runtime.lastError || !response?.ok) {
-              batch.rejectAll(
-                new Error(chrome.runtime.lastError?.message || response?.error || 'MUJAHI request failed')
-              );
-              this.activeStreams.delete(batch.fen);
-              return;
-            }
-            const results = response.payload?.results || {};
-            for (const d of depths) {
-              if (results[String(d)]) {
-                this._resolveDepthWaiters(batch, results[String(d)], response.payload);
-              }
-            }
-            for (const waiter of batch.waiters) {
-              if (!waiter.settled) {
-                waiter.settled = true;
-                waiter.resolve(null);
-              }
-            }
-            this.activeStreams.delete(batch.fen);
-          }
-        );
+          });
+        } catch {
+          finishedCleanly = true;
+          this._executeJsonFallback(batch, depths);
+        }
         return;
       }
 
-      batch.rejectAll(new Error('chrome.runtime MV3 bridge unavailable.'));
-      this.activeStreams.delete(batch.fen);
+      this._executeJsonFallback(batch, depths);
     }
   }
 

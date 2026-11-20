@@ -21,17 +21,25 @@ function createApp({ config, engineManager, requestQueue }) {
     })
   );
 
-  // Explicit CORS policy: Vercel frontend origins allowed explicitly;
-  // requests without an Origin header (curl, healthchecks, MV3 service workers) are permitted.
-  // Arbitrary third-party web pages (including chess.com content scripts) are blocked when allowlist is set.
+  // Explicit CORS policy:
+  // - Requests without an Origin header (curl, Render healthchecks) are permitted.
+  // - Configured frontend origins (CORS_ALLOWED_ORIGINS, e.g. Vercel) are permitted.
+  // - MV3/WebExtension origins (chrome-extension://..., moz-extension://...) are permitted
+  //   when CORS_ALLOW_EXTENSIONS is enabled, because Chromium service workers send
+  //   Origin: chrome-extension://<id> on cross-origin POST requests.
+  // - Arbitrary third-party web pages (e.g. https://www.chess.com) remain blocked.
   const allowedOrigins = new Set(config.corsAllowedOrigins);
+  const isExtensionOrigin = (origin) =>
+    config.corsAllowExtensions !== false &&
+    (/^chrome-extension:\/\/[a-p]{32}$/.test(origin) || /^moz-extension:\/\/[0-9a-f-]+$/i.test(origin));
+
   app.use(
     cors({
       origin(origin, callback) {
         if (!origin) {
           return callback(null, true);
         }
-        if (allowedOrigins.size === 0 || allowedOrigins.has(origin)) {
+        if (allowedOrigins.size === 0 || allowedOrigins.has(origin) || isExtensionOrigin(origin)) {
           return callback(null, true);
         }
         const err = new Error(`Origin ${origin} is not allowed by CORS.`);

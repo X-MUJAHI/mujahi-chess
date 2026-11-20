@@ -121,6 +121,24 @@ test('HTTP endpoints validate inputs, enforce CORS allowlist, and stream SSE sna
       'https://mujahi-chess.vercel.app'
     );
 
+    // 6b. Chrome extension MV3 service worker origin succeeds when corsAllowExtensions=true
+    const extCorsAllowed = await fetch(`${baseUrl}/v1/analyze`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'chrome-extension://klhidcpkkhfcpmjhhikchaikmbefiajf',
+      },
+      body: JSON.stringify({
+        fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+        depths: [5],
+      }),
+    });
+    assert.equal(extCorsAllowed.status, 200);
+    assert.equal(
+      extCorsAllowed.headers.get('access-control-allow-origin'),
+      'chrome-extension://klhidcpkkhfcpmjhhikchaikmbefiajf'
+    );
+
     // 7. SSE streaming endpoint emits started, snapshots, and complete
     const sseRes = await fetch(`${baseUrl}/v1/analyze/stream`, {
       method: 'POST',

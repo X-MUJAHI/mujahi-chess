@@ -63,6 +63,9 @@ function loadConfig() {
       maxEntries: parseIntEnv('DEDUP_CACHE_MAX_ENTRIES', 200, 0, 2000),
     }),
     corsAllowedOrigins: parseCorsOrigins(process.env.CORS_ALLOWED_ORIGINS),
+    corsAllowExtensions: !['false', '0', 'no'].includes(
+      String(process.env.CORS_ALLOW_EXTENSIONS || 'true').trim().toLowerCase()
+    ),
     rateLimit: Object.freeze({
       windowMs: parseIntEnv('RATE_LIMIT_WINDOW_MS', 60000, 1000, 3600000),
       max: parseIntEnv('RATE_LIMIT_MAX', 45, 1, 1000),
