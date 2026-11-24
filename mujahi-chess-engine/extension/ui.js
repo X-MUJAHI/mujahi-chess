@@ -5,7 +5,20 @@ const _savedD5  = parseInt(localStorage.getItem('ch_depth_d5')  || '5');
 const _savedShowD15 = localStorage.getItem('ch_show_d15') !== 'false';
 const _savedShowD10 = localStorage.getItem('ch_show_d10') !== 'false';
 const _savedShowD5  = localStorage.getItem('ch_show_d5')  !== 'false';
-const _savedAutoplayArrow = localStorage.getItem('ch_autoplay_arrow') || 'd15';
+const _savedAutoplayArrowRaw = localStorage.getItem('ch_autoplay_arrow') || 'd15';
+const _savedAutoplayArrow = ['d15', 'd10', 'd5', 'random-blue-teal'].includes(_savedAutoplayArrowRaw)
+    ? _savedAutoplayArrowRaw
+    : 'd15';
+function readAutoplayDelay(key, fallback) {
+    const parsed = Number.parseInt(localStorage.getItem(key) || '', 10);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(10000, parsed)) : fallback;
+}
+const _savedAutoplayRandomizerEnabled = localStorage.getItem('ch_autoplay_randomizer_enabled') === 'true';
+const _savedAutoplayDelayMin = readAutoplayDelay('ch_autoplay_delay_min', 350);
+const _savedAutoplayDelayMax = Math.max(_savedAutoplayDelayMin, readAutoplayDelay('ch_autoplay_delay_max', 1400));
+const _savedOtherGoodMovesEnabled = localStorage.getItem('ch_other_good_moves_enabled') === 'true';
+const _savedOtherGoodMovesCountRaw = Number.parseInt(localStorage.getItem('ch_other_good_moves_count') || '2', 10);
+const _savedOtherGoodMovesCount = Number.isFinite(_savedOtherGoodMovesCountRaw) ? Math.max(1, Math.min(4, _savedOtherGoodMovesCountRaw)) : 2;
 function normalizeEngineProvider(provider) {
     if (provider === 'wasm') return 'wasm';
     if (provider === 'mujahi') return 'mujahi';
@@ -21,10 +34,16 @@ const SUPER_MODE_FEATURES = [
     { key: 'activity', label: 'Center control', group: 'On-board overlays' },
     { key: 'evaluation', label: 'Evaluation bar', group: 'Engine insights' },
     { key: 'mate', label: 'Mate alert', group: 'Engine insights' },
+    { key: 'ponderArrow', label: 'Expected reply (Ponder)', group: 'Engine insights' },
+    { key: 'pvLine', label: 'PV continuation line', group: 'Engine insights' },
+    { key: 'depthConsensus', label: 'Depth consensus / Trap', group: 'Engine insights' },
+    { key: 'winChance', label: 'Win % chance', group: 'Engine insights' },
     { key: 'moveQuality', label: 'Last-move quality', group: 'Engine insights' },
     { key: 'blunders', label: 'Blunder move alerts', group: 'Engine insights' },
     { key: 'evalDrop', label: 'Small evaluation-drop alerts', group: 'Engine insights' },
     { key: 'opponentBestMove', label: 'Opponent best move', group: 'Engine insights' },
+    { key: 'engineTelemetry', label: 'Engine telemetry (NPS)', group: 'Position lookups' },
+    { key: 'evalGraph', label: 'Eval sparkline', group: 'Position lookups' },
     { key: 'alternatives', label: 'Alternative lines', group: 'Position lookups' },
     { key: 'openingExplorer', label: 'Opening Explorer', group: 'Position lookups' },
     { key: 'tablebase', label: 'Endgame tablebase', group: 'Position lookups' },
@@ -38,6 +57,11 @@ if (localStorage.getItem('ch_supermode_v2_defaults') !== 'true') {
 }
 const _savedSuperModeFeatures = Object.fromEntries(SUPER_MODE_FEATURES.map(f => [f.key, localStorage.getItem(`ch_super_${f.key}`) === 'true']));
 
+const _savedSuperPvPliesRaw = Number.parseInt(localStorage.getItem('ch_super_pv_plies') || '3', 10);
+const _savedSuperPvPlies = Number.isFinite(_savedSuperPvPliesRaw) ? Math.max(2, Math.min(5, _savedSuperPvPliesRaw)) : 3;
+const _savedSuperHudCorner = localStorage.getItem('ch_super_hud_corner') === 'bottom-left' ? 'bottom-left' : 'top-left';
+const _savedSuperHudCompact = localStorage.getItem('ch_super_hud_compact') === 'true';
+
 window.chessHelper = {
     masterToggle: true,
     autoPlay: false,
@@ -45,7 +69,21 @@ window.chessHelper = {
     engineProvider: _savedEngineProvider,
     superModeEnabled: localStorage.getItem('ch_supermode_enabled') === 'true',
     superModeFeatures: { ..._savedSuperModeFeatures },
+    superModeOptions: {
+        pvPlies: _savedSuperPvPlies,
+        hudCorner: _savedSuperHudCorner,
+        hudCompact: _savedSuperHudCompact
+    },
     autoplayArrow: _savedAutoplayArrow,
+    autoplayRandomizer: {
+        enabled: _savedAutoplayRandomizerEnabled,
+        minMs: _savedAutoplayDelayMin,
+        maxMs: _savedAutoplayDelayMax
+    },
+    otherGoodMoves: {
+        enabled: _savedOtherGoodMovesEnabled,
+        count: _savedOtherGoodMovesCount
+    },
     arrows: {
         d15: { depth: _savedD15, show: _savedShowD15, color: '#4ade80' },
         d10: { depth: _savedD10, show: _savedShowD10, color: '#2dd4bf' },
@@ -91,7 +129,6 @@ function initUI() {
     panelEl = document.createElement('div');
     panelEl.id = 'chess-helper-panel';
 
-    const isPremium = localStorage.getItem('ch_is_premium') === 'true';
     const savedEngineSource = localStorage.getItem('ch_use_engine');
     const useEngine = savedEngineSource === null ? true : savedEngineSource === 'true';
     window.chessHelper.useEngine = useEngine;
@@ -107,7 +144,7 @@ function initUI() {
                 <button id="ch-btn-force-refresh" style="background:none; border:none; color:var(--ch-text-secondary); cursor:pointer; padding: 2px; display:flex;" title="Force Engine Refresh">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
                 </button>
-                <button id="ch-btn-engine-settings" style="background:none; border:none; color:var(--ch-text-secondary); cursor:pointer; padding:2px 4px; display:flex; font-size:15px; line-height:1;" title="Engine settings" aria-label="Engine settings">⚙</button>
+                <button id="ch-btn-engine-settings" style="background:none; border:none; color:var(--ch-text-secondary); cursor:pointer; padding:2px 4px; display:flex; font-size:15px; line-height:1;" title="Settings" aria-label="Settings">⚙</button>
                 <label class="ch-switch" style="transform: scale(0.7); margin: 0; transform-origin: right;" title="Master Power Switch">
                     <input type="checkbox" id="ch-master-toggle" checked>
                     <span class="ch-slider"></span>
@@ -175,7 +212,7 @@ function initUI() {
             </div>
 
             <!-- d5 row -->
-            <div class="ch-row" style="margin-bottom:10px;">
+            <div class="ch-row" style="margin-bottom:2px;">
                 <div style="display:flex; align-items:center; gap:7px; flex:1;">
                     <span style="width:9px; height:9px; border-radius:50%; flex-shrink:0; background:#38bdf8; box-shadow:0 0 5px #38bdf888;"></span>
                     <span style="font-size:11px; color:var(--ch-text-secondary); width:26px;">D</span>
@@ -186,17 +223,13 @@ function initUI() {
                     <span class="ch-slider"></span>
                 </label>
             </div>
-
-            <!-- Autoplay source -->
-            <div class="ch-row">
-                <span style="font-size:12px; color:var(--ch-text-primary); font-weight:500;">Autoplay arrow</span>
-                <select id="ch-autoplay-arrow" style="background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.12); color:white; padding:4px 8px; border-radius:6px; font-size:12px; font-family:var(--ch-font); cursor:pointer; outline:none;">
-                    <option value="d15" ${_savedAutoplayArrow === 'd15' ? 'selected' : ''}>● Green (15)</option>
-                    <option value="d10" ${_savedAutoplayArrow === 'd10' ? 'selected' : ''}>● Teal (10)</option>
-                    <option value="d5"  ${_savedAutoplayArrow === 'd5'  ? 'selected' : ''}>● Blue (5)</option>
-                </select>
-            </div>
         </div>
+
+        <section id="ch-other-good-moves-card" class="ch-other-good-moves-card" style="display:none;">
+            <div class="ch-other-good-moves-head"><strong>Other good moves</strong><span style="display:inline-flex;align-items:center;gap:7px;"><span id="ch-other-good-moves-count-label">2 alternatives</span><button type="button" id="ch-other-good-moves-refresh" class="ch-other-good-moves-refresh" title="Refresh alternatives" aria-label="Refresh alternatives">↻</button></span></div>
+            <div id="ch-other-good-moves-list" class="ch-other-good-moves-list"><span class="ch-other-good-moves-status">Waiting for a position…</span></div>
+            <p id="ch-other-good-moves-note" class="ch-other-good-moves-note">Lichess cached analysis · separate from the selected engine depth</p>
+        </section>
 
         <div class="ch-row" style="margin-bottom: 12px;" id="ch-premium-block">
             <span class="ch-label" style="color: #FFD700; display:flex; align-items:center;">
@@ -263,7 +296,7 @@ function initUI() {
     superSettingsOverlay.innerHTML = `
         <div class="ch-super-settings-sheet" role="dialog" aria-modal="true" aria-labelledby="ch-super-settings-title">
             <div class="ch-super-settings-head">
-                <div><strong id="ch-super-settings-title">SuperMode overlays</strong><small>Choose what appears on the board</small></div>
+                <div><strong id="ch-super-settings-title">SuperMode overlays</strong><small>Choose what appears on the board (pointer-events pass through)</small></div>
                 <button type="button" id="ch-super-settings-close" aria-label="Close settings">✕</button>
             </div>
             ${groupedFeatures.map(group => `
@@ -279,7 +312,30 @@ function initUI() {
                     </div>
                 </section>
             `).join('')}
-            <button type="button" class="ch-btn ch-btn-secondary" id="ch-supermode-review">Review this session</button>
+            <section class="ch-super-settings-group ch-super-options-group">
+                <div class="ch-super-settings-group-title">Display options</div>
+                <label class="ch-autoplay-source-field" for="ch-super-pv-plies">
+                    <span>PV line length</span>
+                    <select id="ch-super-pv-plies" class="ch-autoplay-source-select">
+                        ${[2,3,4,5].map(n => `<option value="${n}" ${_savedSuperPvPlies === n ? 'selected' : ''}>${n} plies</option>`).join('')}
+                    </select>
+                </label>
+                <label class="ch-autoplay-source-field" for="ch-super-hud-corner">
+                    <span>HUD corner</span>
+                    <select id="ch-super-hud-corner" class="ch-autoplay-source-select">
+                        <option value="top-left" ${_savedSuperHudCorner === 'top-left' ? 'selected' : ''}>Top-left</option>
+                        <option value="bottom-left" ${_savedSuperHudCorner === 'bottom-left' ? 'selected' : ''}>Bottom-left</option>
+                    </select>
+                </label>
+                <label class="ch-autoplay-randomizer-toggle" for="ch-super-hud-compact">
+                    <input type="checkbox" id="ch-super-hud-compact" ${_savedSuperHudCompact ? 'checked' : ''}>
+                    <span><strong>Compact HUD pills</strong><small>Smaller text and padding to keep board squares clear</small></span>
+                </label>
+            </section>
+            <div class="ch-super-settings-actions">
+                <button type="button" class="ch-btn ch-btn-secondary" id="ch-supermode-review">Review this session</button>
+                <button type="button" class="ch-btn ch-btn-secondary" id="ch-supermode-clear" title="Turn off all SuperMode overlays">Clear all</button>
+            </div>
         </div>`;
 
     const engineSettingsOverlay = document.createElement('div');
@@ -288,7 +344,7 @@ function initUI() {
     engineSettingsOverlay.innerHTML = `
         <div class="ch-super-settings-sheet" role="dialog" aria-modal="true" aria-labelledby="ch-engine-settings-title">
             <div class="ch-super-settings-head">
-                <div><strong id="ch-engine-settings-title">Engine settings</strong><small>Choose where chess analysis runs</small></div>
+                <div><strong id="ch-engine-settings-title">Settings</strong><small>Engine and auto-play preferences</small></div>
                 <button type="button" id="ch-engine-settings-close" aria-label="Close engine settings">✕</button>
             </div>
             <section class="ch-super-settings-group">
@@ -311,6 +367,53 @@ function initUI() {
                 <button type="button" id="ch-btn-test-mujahi" class="ch-btn ch-btn-secondary" style="flex:0 0 auto; padding:5px 10px; font-size:10px; border-radius:8px;">Test MUJAHI</button>
             </div>
             <p class="ch-engine-provider-note">Switch anytime between Hosted API, MUJAHI API (progressive D5/D10/D15 SSE stream), or Local WASM (requires the two Stockfish files in <code>engine/</code>).</p>
+            <section class="ch-super-settings-group ch-other-good-moves-settings">
+                <div class="ch-super-settings-group-title">Other good moves</div>
+                <label class="ch-autoplay-randomizer-toggle" for="ch-other-good-moves-enabled">
+                    <input type="checkbox" id="ch-other-good-moves-enabled" ${_savedOtherGoodMovesEnabled ? 'checked' : ''}>
+                    <span><strong>Show alternative moves</strong><small>Display strong alternatives below the arrows</small></span>
+                </label>
+                <div class="ch-other-good-moves-options" id="ch-other-good-moves-options" ${_savedOtherGoodMovesEnabled ? '' : 'data-disabled="true"'}>
+                    <label class="ch-autoplay-source-field" for="ch-other-good-moves-count">
+                        <span>Number of alternatives</span>
+                        <select id="ch-other-good-moves-count" class="ch-autoplay-source-select">
+                            ${[1,2,3,4].map(n => `<option value="${n}" ${_savedOtherGoodMovesCount === n ? 'selected' : ''}>${n}</option>`).join('')}
+                        </select>
+                    </label>
+                </div>
+                <p class="ch-autoplay-delay-note">Uses Lichess Cloud Eval MultiPV, not the selected Stockfish provider. It can only return positions already in Lichess’s cache, and its depth may differ from your selected depth.</p>
+            </section>
+            <section class="ch-super-settings-group ch-autoplay-source-group">
+                <div class="ch-super-settings-group-title">Auto-play move source</div>
+                <label class="ch-autoplay-source-field" for="ch-autoplay-arrow">
+                    <span>Play the move from</span>
+                    <select id="ch-autoplay-arrow" class="ch-autoplay-source-select">
+                        <option value="d15" ${_savedAutoplayArrow === 'd15' ? 'selected' : ''}>● Green (D15)</option>
+                        <option value="d10" ${_savedAutoplayArrow === 'd10' ? 'selected' : ''}>● Teal (D10)</option>
+                        <option value="d5" ${_savedAutoplayArrow === 'd5' ? 'selected' : ''}>● Blue (D5)</option>
+                        <option value="random-blue-teal" ${_savedAutoplayArrow === 'random-blue-teal' ? 'selected' : ''}>Random — Blue / Teal</option>
+                    </select>
+                </label>
+                <p class="ch-autoplay-source-note">Random mode chooses Blue (D5) or Teal (D10) independently for each turn. Enable both arrows in the main panel to use both choices.</p>
+            </section>
+            <section class="ch-super-settings-group ch-autoplay-timing-group">
+                <div class="ch-super-settings-group-title">Auto-play timing</div>
+                <label class="ch-autoplay-randomizer-toggle" for="ch-autoplay-randomizer-enabled">
+                    <input type="checkbox" id="ch-autoplay-randomizer-enabled" ${_savedAutoplayRandomizerEnabled ? 'checked' : ''}>
+                    <span><strong>Randomize move delay</strong><small>Choose a fresh delay before each auto-play move</small></span>
+                </label>
+                <div class="ch-autoplay-delay-fields" id="ch-autoplay-delay-fields" ${_savedAutoplayRandomizerEnabled ? '' : 'data-disabled="true"'}>
+                    <label class="ch-autoplay-delay-field" for="ch-autoplay-delay-min">
+                        <span>Minimum</span>
+                        <span class="ch-autoplay-delay-input-wrap"><input type="number" id="ch-autoplay-delay-min" min="0" max="10000" step="50" value="${_savedAutoplayDelayMin}"><small>ms</small></span>
+                    </label>
+                    <label class="ch-autoplay-delay-field" for="ch-autoplay-delay-max">
+                        <span>Maximum</span>
+                        <span class="ch-autoplay-delay-input-wrap"><input type="number" id="ch-autoplay-delay-max" min="0" max="10000" step="50" value="${_savedAutoplayDelayMax}"><small>ms</small></span>
+                    </label>
+                </div>
+                <p class="ch-autoplay-delay-note" id="ch-autoplay-delay-note" aria-live="polite">A new random delay is picked independently for every move.</p>
+            </section>
         </div>`;
 
     rootEl.appendChild(bubbleEl);
@@ -328,6 +431,7 @@ function initUI() {
     setupButtonEvents();
 
     if (window.chessHelperEngine?.updateMoveUI) window.chessHelperEngine.updateMoveUI();
+    if (window.chessHelperEngine?.refreshOtherGoodMoves) window.chessHelperEngine.refreshOtherGoodMoves();
 }
 
 // --- DRAG LOGIC ---
@@ -364,7 +468,8 @@ window.showCustomModal = function (title, text, btnText = null, btnCallback = nu
 
 // --- BUTTON EVENTS ---
 function setupButtonEvents() {
-    document.getElementById('ch-modal-close').addEventListener('click', () => modalOverlay.classList.remove('visible'), { signal: uiAbortController?.signal });
+    const signal = uiAbortController?.signal;
+    document.getElementById('ch-modal-close').addEventListener('click', () => modalOverlay.classList.remove('visible'), { signal });
 
     document.getElementById('ch-btn-force-refresh').addEventListener('click', (e) => {
         e.preventDefault();
@@ -372,7 +477,7 @@ function setupButtonEvents() {
         e.currentTarget.style.transition = "transform 0.3s";
         setTimeout(() => { e.target.closest('button').style.transform = "rotate(0deg)"; }, 300);
         if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
-    });
+    }, { signal });
 
     const engineSettingsOverlay = document.getElementById('ch-engine-settings-overlay');
     const closeEngineSettings = () => engineSettingsOverlay.classList.remove('visible');
@@ -403,16 +508,70 @@ function setupButtonEvents() {
         }
     };
     if (mujahiTestBtn) {
-        mujahiTestBtn.addEventListener('click', runMujahiHealthCheck, { signal: uiAbortController?.signal });
+        mujahiTestBtn.addEventListener('click', runMujahiHealthCheck, { signal });
     }
     document.getElementById('ch-btn-engine-settings').addEventListener('click', () => {
         engineSettingsOverlay.classList.add('visible');
         if (normalizeEngineProvider(window.chessHelper.engineProvider) === 'mujahi') {
             runMujahiHealthCheck();
         }
-    }, { signal: uiAbortController?.signal });
-    document.getElementById('ch-engine-settings-close').addEventListener('click', closeEngineSettings, { signal: uiAbortController?.signal });
-    engineSettingsOverlay.addEventListener('click', (e) => { if (e.target === engineSettingsOverlay) closeEngineSettings(); }, { signal: uiAbortController?.signal });
+    }, { signal });
+    document.getElementById('ch-engine-settings-close').addEventListener('click', closeEngineSettings, { signal });
+    engineSettingsOverlay.addEventListener('click', (e) => { if (e.target === engineSettingsOverlay) closeEngineSettings(); }, { signal });
+
+    const randomizerToggle = document.getElementById('ch-autoplay-randomizer-enabled');
+    const randomizerFields = document.getElementById('ch-autoplay-delay-fields');
+    const randomizerMin = document.getElementById('ch-autoplay-delay-min');
+    const randomizerMax = document.getElementById('ch-autoplay-delay-max');
+    const randomizerNote = document.getElementById('ch-autoplay-delay-note');
+    randomizerNote.textContent = _savedAutoplayRandomizerEnabled
+        ? `Each move will wait a random ${_savedAutoplayDelayMin}–${_savedAutoplayDelayMax} ms before playing.`
+        : 'Random delay is off. Auto-play uses its normal timing.';
+    const saveAutoplayRandomizer = () => {
+        const minMs = randomizerMin.value.trim() === '' ? NaN : Number(randomizerMin.value);
+        const maxMs = randomizerMax.value.trim() === '' ? NaN : Number(randomizerMax.value);
+        if (!Number.isInteger(minMs) || !Number.isInteger(maxMs) || minMs < 0 || minMs > 10000 || maxMs < 0 || maxMs > 10000 || minMs > maxMs) {
+            randomizerNote.textContent = minMs > maxMs ? 'Minimum must be less than or equal to maximum.' : 'Enter whole-number delays from 0 to 10000 ms.';
+            randomizerNote.classList.add('is-error');
+            return false;
+        }
+        const enabled = randomizerToggle.checked;
+        window.chessHelper.autoplayRandomizer = { enabled, minMs, maxMs };
+        localStorage.setItem('ch_autoplay_randomizer_enabled', String(enabled));
+        localStorage.setItem('ch_autoplay_delay_min', String(minMs));
+        localStorage.setItem('ch_autoplay_delay_max', String(maxMs));
+        randomizerFields.dataset.disabled = String(!enabled);
+        randomizerNote.textContent = enabled
+            ? `Each move will wait a random ${minMs}–${maxMs} ms before playing.`
+            : 'Random delay is off. Auto-play uses its normal timing.';
+        randomizerNote.classList.remove('is-error');
+        return true;
+    };
+    randomizerToggle.addEventListener('change', saveAutoplayRandomizer, { signal });
+    randomizerMin.addEventListener('change', saveAutoplayRandomizer, { signal });
+    randomizerMax.addEventListener('change', saveAutoplayRandomizer, { signal });
+
+    const otherMovesToggle = document.getElementById('ch-other-good-moves-enabled');
+    const otherMovesOptions = document.getElementById('ch-other-good-moves-options');
+    const otherMovesCount = document.getElementById('ch-other-good-moves-count');
+    const saveOtherGoodMoves = () => {
+        const enabled = otherMovesToggle.checked;
+        const count = Math.max(1, Math.min(4, Number.parseInt(otherMovesCount.value, 10) || 2));
+        otherMovesCount.value = String(count);
+        window.chessHelper.otherGoodMoves = { enabled, count };
+        localStorage.setItem('ch_other_good_moves_enabled', String(enabled));
+        localStorage.setItem('ch_other_good_moves_count', String(count));
+        otherMovesOptions.dataset.disabled = String(!enabled);
+        const card = document.getElementById('ch-other-good-moves-card');
+        if (!enabled && card) card.style.display = 'none';
+        if (window.chessHelperEngine?.refreshOtherGoodMoves) window.chessHelperEngine.refreshOtherGoodMoves();
+    };
+    otherMovesToggle.addEventListener('change', saveOtherGoodMoves, { signal });
+    otherMovesCount.addEventListener('change', saveOtherGoodMoves, { signal });
+    document.getElementById('ch-other-good-moves-refresh').addEventListener('click', () => {
+        if (window.chessHelperEngine?.refreshOtherGoodMoves) window.chessHelperEngine.refreshOtherGoodMoves();
+    }, { signal });
+
     engineSettingsOverlay.querySelectorAll('input[name="ch-engine-provider"]').forEach(input => {
         input.addEventListener('change', (e) => {
             const provider = normalizeEngineProvider(e.target.value);
@@ -430,7 +589,7 @@ function setupButtonEvents() {
                     ? 'MUJAHI Stockfish 19 API is selected. Positions will stream progressively (D5/D10/D15) from your MUJAHI Render backend.'
                     : 'StockfishOnline Hosted API is selected. Analysis will use the existing online engine service.';
             window.showCustomModal('Analysis engine changed', message);
-        }, { signal: uiAbortController?.signal });
+        }, { signal });
     });
 
     document.getElementById('ch-master-toggle').addEventListener('change', (e) => {
@@ -439,18 +598,21 @@ function setupButtonEvents() {
             window.clearAllArrows();
             if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
         } else if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
-    });
+    }, { signal });
 
     document.getElementById('ch-toggle-autoplay').addEventListener('change', (e) => {
-        window.chessHelper.autoPlay = e.target.checked;
-        if (window.chessHelper.autoPlay && window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
-    });
+        if (window.chessHelperEngine?.setAutoPlay) window.chessHelperEngine.setAutoPlay(e.target.checked);
+        else {
+            window.chessHelper.autoPlay = e.target.checked;
+            if (window.chessHelper.autoPlay && window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
+        }
+    }, { signal });
 
     document.getElementById('ch-toggle-engine').addEventListener('change', (e) => {
         window.chessHelper.useEngine = e.target.checked;
         localStorage.setItem('ch_use_engine', String(e.target.checked));
         if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
-    });
+    }, { signal });
 
     const superModeToggle = document.getElementById('ch-supermode-toggle');
     const superModeControls = document.getElementById('ch-supermode-controls');
@@ -461,12 +623,12 @@ function setupButtonEvents() {
         localStorage.setItem('ch_supermode_enabled', String(e.target.checked));
         superModeControls.style.display = e.target.checked ? 'block' : 'none';
         if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
-    }, { signal: uiAbortController?.signal });
+    }, { signal });
 
-    document.getElementById('ch-supermode-settings').addEventListener('click', () => superSettingsOverlay.classList.add('visible'), { signal: uiAbortController?.signal });
-    document.getElementById('ch-super-settings-close').addEventListener('click', closeSuperSettings, { signal: uiAbortController?.signal });
-    superSettingsOverlay.addEventListener('click', (e) => { if (e.target === superSettingsOverlay) closeSuperSettings(); }, { signal: uiAbortController?.signal });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSuperSettings(); closeEngineSettings(); } }, { signal: uiAbortController?.signal });
+    document.getElementById('ch-supermode-settings').addEventListener('click', () => superSettingsOverlay.classList.add('visible'), { signal });
+    document.getElementById('ch-super-settings-close').addEventListener('click', closeSuperSettings, { signal });
+    superSettingsOverlay.addEventListener('click', (e) => { if (e.target === superSettingsOverlay) closeSuperSettings(); }, { signal });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSuperSettings(); closeEngineSettings(); } }, { signal });
 
     superSettingsOverlay.querySelectorAll('[data-super-feature]').forEach(input => {
         input.addEventListener('change', (e) => {
@@ -475,13 +637,48 @@ function setupButtonEvents() {
             window.chessHelper.superModeFeatures[key] = e.target.checked;
             localStorage.setItem(`ch_super_${key}`, String(e.target.checked));
             if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
-        }, { signal: uiAbortController?.signal });
+        }, { signal });
     });
+
+    const pvPliesSelect = document.getElementById('ch-super-pv-plies');
+    const hudCornerSelect = document.getElementById('ch-super-hud-corner');
+    const hudCompactCheckbox = document.getElementById('ch-super-hud-compact');
+    pvPliesSelect.addEventListener('change', (e) => {
+        const val = Math.max(2, Math.min(5, Number.parseInt(e.target.value, 10) || 3));
+        e.target.value = String(val);
+        window.chessHelper.superModeOptions.pvPlies = val;
+        localStorage.setItem('ch_super_pv_plies', String(val));
+        if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
+    }, { signal });
+    hudCornerSelect.addEventListener('change', (e) => {
+        const corner = e.target.value === 'bottom-left' ? 'bottom-left' : 'top-left';
+        e.target.value = corner;
+        window.chessHelper.superModeOptions.hudCorner = corner;
+        localStorage.setItem('ch_super_hud_corner', corner);
+        if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
+    }, { signal });
+    hudCompactCheckbox.addEventListener('change', (e) => {
+        const compact = Boolean(e.target.checked);
+        window.chessHelper.superModeOptions.hudCompact = compact;
+        localStorage.setItem('ch_super_hud_compact', String(compact));
+        if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
+    }, { signal });
 
     document.getElementById('ch-supermode-review').addEventListener('click', () => {
         if (window.chessHelperEngine?.reviewSuperModeSession) window.chessHelperEngine.reviewSuperModeSession();
         closeSuperSettings();
-    }, { signal: uiAbortController?.signal });
+    }, { signal });
+
+    document.getElementById('ch-supermode-clear').addEventListener('click', () => {
+        for (const feature of SUPER_MODE_FEATURES) {
+            window.chessHelper.superModeFeatures[feature.key] = false;
+            localStorage.setItem(`ch_super_${feature.key}`, 'false');
+        }
+        superSettingsOverlay.querySelectorAll('[data-super-feature]').forEach(input => {
+            input.checked = false;
+        });
+        if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
+    }, { signal });
 
     // Arrow depth + visibility controls
     for (const key of ['d5', 'd10', 'd15']) {
@@ -494,39 +691,42 @@ function setupButtonEvents() {
             window.chessHelper.arrows[key].depth = val;
             localStorage.setItem(lsDepthKey, val);
             if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
-        });
+        }, { signal });
 
         document.getElementById(`ch-show-${key}`).addEventListener('change', (e) => {
             window.chessHelper.arrows[key].show = e.target.checked;
             localStorage.setItem(lsShowKey, String(e.target.checked));
             if (!e.target.checked) window.clearArrow(key);
             else if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
-        });
+        }, { signal });
     }
 
     document.getElementById('ch-autoplay-arrow').addEventListener('change', (e) => {
-        window.chessHelper.autoplayArrow = e.target.value;
-        localStorage.setItem('ch_autoplay_arrow', e.target.value);
-    });
+        const value = ['d15', 'd10', 'd5', 'random-blue-teal'].includes(e.target.value) ? e.target.value : 'd15';
+        window.chessHelper.autoplayArrow = value;
+        e.target.value = value;
+        localStorage.setItem('ch_autoplay_arrow', value);
+        if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
+    }, { signal });
 
     document.getElementById('ch-human-info').addEventListener('click', (e) => {
         e.preventDefault();
         window.showCustomModal("Human Style 👑", "Plays exactly like a human grandmaster. It makes moves that look natural to avoid detection, without compromising your win chance.");
-    });
+    }, { signal });
 
     document.getElementById('ch-human-toggle').addEventListener('click', (e) => {
         const isPremium = localStorage.getItem('ch_is_premium') === 'true';
         if (!isPremium) { e.preventDefault(); window.showCustomModal("Premium Feature", "Human Style is reserved for Premium users. Get your key to unlock stealth mode."); }
-    });
+    }, { signal });
 
     const expandSection = document.getElementById('ch-expandable-section');
-    document.getElementById('ch-btn-get-moves').addEventListener('click', () => { expandSection.classList.add('open'); updatePanelPosition(); }, { signal: uiAbortController?.signal });
-    document.getElementById('ch-btn-shrink').addEventListener('click', () => { expandSection.classList.remove('open'); updatePanelPosition(); }, { signal: uiAbortController?.signal });
+    document.getElementById('ch-btn-get-moves').addEventListener('click', () => { expandSection.classList.add('open'); updatePanelPosition(); }, { signal });
+    document.getElementById('ch-btn-shrink').addEventListener('click', () => { expandSection.classList.remove('open'); updatePanelPosition(); }, { signal });
 
     document.getElementById('ch-active-key-info').addEventListener('click', (e) => {
         e.preventDefault();
         window.showCustomModal("Key Info", "This temporary key is for moves 60 and depth 7. You can get temporary keys or buy Premium keys from our website.");
-    });
+    }, { signal });
 
     document.getElementById('ch-active-key-remove').addEventListener('click', (e) => {
         e.preventDefault();
@@ -543,10 +743,10 @@ function setupButtonEvents() {
         localStorage.removeItem('ch_is_premium');
         localStorage.setItem('ch_bonus_moves', '0');
         if (window.chessHelperEngine?.updateMoveUI) window.chessHelperEngine.updateMoveUI();
-    });
+    }, { signal });
 
-    document.getElementById('ch-btn-get-key').addEventListener('click', () => window.open('https://xndroid.store/ads-page-placeholder', '_blank'), { signal: uiAbortController?.signal });
-    document.getElementById('ch-btn-buy-premium').addEventListener('click', () => window.open('https://xndroid.store/premium-placeholder', '_blank'), { signal: uiAbortController?.signal });
+    document.getElementById('ch-btn-get-key').addEventListener('click', () => window.open('https://xndroid.store/ads-page-placeholder', '_blank'), { signal });
+    document.getElementById('ch-btn-buy-premium').addEventListener('click', () => window.open('https://xndroid.store/premium-placeholder', '_blank'), { signal });
 
     document.getElementById('ch-btn-submit-key').addEventListener('click', async () => {
         const input = document.getElementById('ch-key-input').value.trim().toUpperCase();
@@ -587,11 +787,10 @@ function setupButtonEvents() {
         }
         btnSubmit.innerHTML = originalContent;
         btnSubmit.disabled = false;
-    });
+    }, { signal });
 }
 
 // --- VISUALIZATION ---
-// Arrow config per key
 const ARROW_CONFIG = {
     d15:      { stroke: '#4ade80', hlStart: 'rgba(74,222,128,0.35)', hlEnd: 'rgba(74,222,128,0.55)', speed: 1.0   },
     d10:      { stroke: '#2dd4bf', hlStart: 'rgba(45,212,191,0.35)', hlEnd: 'rgba(45,212,191,0.55)', speed: 1.3   },
@@ -677,4 +876,3 @@ window.drawDottedMove = function (move, source = 'engine') {
 window.clearDottedMove = function () { window.clearAllArrows(); };
 
 if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initUI); } else { initUI(); }
-

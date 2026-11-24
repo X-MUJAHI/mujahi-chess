@@ -1,5 +1,5 @@
 /**
- * MUJAHI Chess Engine — Provider Adapter for Chess Helper 2.1.0 (SuperMode)
+ * MUJAHI Chess Engine — Provider Adapter for Chess Helper 2.1.4 (SuperMode)
  *
  * Preserves existing providers:
  *   - 'api'    (Hosted API — StockfishOnline default)
@@ -7,8 +7,9 @@
  * Adds:
  *   - 'mujahi' (MUJAHI Stockfish 19 API via MV3 background service worker)
  *
- * Returns normalized Chess Helper 2.1.0 analysis objects:
- *   { move, evaluation, mate, continuation, depth, raw }
+ * Returns normalized Chess Helper 2.1.4 analysis objects:
+ *   { move, ponder, evaluation, rawCp, mate, bound, pv, continuation, depth,
+ *     seldepth, nodes, nps, time, terminal, cached, deduplicated, version, raw }
  * where `evaluation` and `mate` are always normalized to White's point of view.
  */
 (function attachMujahiExtensionAdapter(global) {
@@ -45,7 +46,7 @@
 
   /**
    * Normalizes a single MUJAHI depth snapshot or top-level response into
-   * the exact shape expected by Chess Helper 2.1.0 `engineAnalysisCache`.
+   * the enriched Chess Helper analysis shape while maintaining full 2.1.x compatibility.
    */
   function normalizeMujahiSnapshot(snapshot, rawPayload = null) {
     if (!snapshot) return null;
@@ -54,12 +55,18 @@
 
     const rawEval = snapshot.evaluation ?? snapshot.eval ?? snapshot.score;
     let evaluation = null;
+    let rawCp = null;
+    let bound = snapshot.bound || 'exact';
     let mate =
       snapshot.mate === null || snapshot.mate === undefined || snapshot.mate === '' || snapshot.mate === 'null'
         ? null
         : Number(snapshot.mate);
 
     if (rawEval && typeof rawEval === 'object') {
+      if (rawEval.bound) bound = String(rawEval.bound);
+      if (rawEval.rawCp !== null && rawEval.rawCp !== undefined && Number.isFinite(Number(rawEval.rawCp))) {
+        rawCp = Number(rawEval.rawCp);
+      }
       if (rawEval.type === 'cp' && rawEval.value !== null && rawEval.value !== undefined) {
         const parsedCp = Number(rawEval.value);
         if (Number.isFinite(parsedCp)) evaluation = parsedCp;
@@ -72,19 +79,42 @@
       if (Number.isFinite(parsedEval)) evaluation = parsedEval;
     }
 
-    const continuation =
-      typeof snapshot.continuation === 'string'
-        ? snapshot.continuation
-        : Array.isArray(snapshot.pv)
-          ? snapshot.pv.join(' ')
-          : '';
+    if (rawCp === null && Number.isFinite(evaluation)) {
+      rawCp = Math.round(evaluation * 100);
+    }
+
+    const pv = Array.isArray(snapshot.pv)
+      ? snapshot.pv.map((m) => extractUciMove(m)).filter(Boolean)
+      : typeof snapshot.continuation === 'string'
+        ? snapshot.continuation.trim().split(/\s+/).filter(Boolean)
+        : [];
+    const continuation = pv.join(' ');
+    const ponder = extractUciMove(snapshot.ponder || pv[1] || rawPayload?.ponder || '') || null;
+
+    const parseOptionalNum = (val) => {
+      if (val === null || val === undefined || val === '') return null;
+      const num = Number(val);
+      return Number.isFinite(num) ? num : null;
+    };
 
     return {
       move,
+      ponder,
       evaluation: Number.isFinite(evaluation) ? evaluation : null,
+      rawCp: Number.isFinite(rawCp) ? rawCp : null,
       mate: Number.isFinite(mate) ? mate : null,
+      bound: bound || 'exact',
+      pv,
       continuation,
       depth: Number(snapshot.depth) || 0,
+      seldepth: parseOptionalNum(snapshot.seldepth),
+      nodes: parseOptionalNum(snapshot.nodes),
+      nps: parseOptionalNum(snapshot.nps),
+      time: parseOptionalNum(snapshot.time),
+      terminal: Boolean(snapshot.terminal ?? rawPayload?.terminal),
+      cached: Boolean(rawPayload?.cached ?? snapshot.cached),
+      deduplicated: Boolean(rawPayload?.deduplicated ?? snapshot.deduplicated),
+      version: rawPayload?.version || snapshot.version || 'Stockfish 19',
       raw: rawPayload || snapshot,
     };
   }
@@ -168,8 +198,14 @@
     }
 
     /**
-     * Batches simultaneous D5/D10/D15 calls from Chess Helper 2.1.0 for the same FEN
+     * Batches simultaneous D5/D10/D15 calls from Chess Helper for the same FEN
      * into ONE single-search Stockfish 19 request on the MUJAHI backend.
+     *
+     * @param {string} fen
+     * @param {number} depth
+     * @param {AbortSignal|null} signal
+     * @param {(analysis: object) => void} [onNormalizedAnalysis]
+     * @returns {Promise<string|null>} Best UCI move for requested depth
      */
     fetchBestMove(fen, depth, signal = null, onNormalizedAnalysis = null) {
       if (signal?.aborted) {
@@ -190,6 +226,7 @@
             cancelled: false,
             port: null,
             resolvedSnapshots: new Map(),
+            notifiedDepths: new Set(),
             rejectAll: (err) => {
               for (const w of batch.waiters) {
                 if (!w.settled) {
@@ -271,14 +308,29 @@
       if (!normalized) return;
 
       batch.resolvedSnapshots.set(normalized.depth, normalized);
+      const snapshotList = Array.from(batch.resolvedSnapshots.values()).sort((a, b) => a.depth - b.depth);
+      normalized.depthSnapshots = snapshotList;
+
+      let notifiedAny = false;
       for (const waiter of batch.waiters) {
         if (!waiter.settled && waiter.depth === normalized.depth) {
           waiter.settled = true;
           if (typeof waiter.onNormalizedAnalysis === 'function') {
             waiter.onNormalizedAnalysis(normalized);
+            notifiedAny = true;
           }
           waiter.resolve(normalized.move);
         }
+      }
+
+      if (!notifiedAny && !batch.notifiedDepths.has(normalized.depth)) {
+        const progressWaiter = batch.waiters.find((w) => typeof w.onNormalizedAnalysis === 'function');
+        if (progressWaiter) {
+          batch.notifiedDepths.add(normalized.depth);
+          progressWaiter.onNormalizedAnalysis(normalized);
+        }
+      } else {
+        batch.notifiedDepths.add(normalized.depth);
       }
     }
 
@@ -287,17 +339,36 @@
         return;
       }
       const results = payload?.results;
-      for (const d of depths) {
-        const snap = findResultForDepth(results, d);
-        if (snap) {
-          this._resolveDepthWaiters(batch, snap, payload);
+      if (Array.isArray(results)) {
+        for (const snap of results) {
+          if (snap) this._resolveDepthWaiters(batch, snap, payload);
+        }
+      } else {
+        for (const d of depths) {
+          const snap = findResultForDepth(results, d);
+          if (snap) {
+            this._resolveDepthWaiters(batch, snap, payload);
+          }
+        }
+      }
+
+      const deepestRaw = getDeepestResult(results);
+      if (deepestRaw) {
+        const deepestNorm = normalizeMujahiSnapshot(deepestRaw, payload);
+        if (deepestNorm) {
+          deepestNorm.depthSnapshots = Array.from(batch.resolvedSnapshots.values()).sort((a, b) => a.depth - b.depth);
+          const progressWaiter = batch.waiters.find((w) => typeof w.onNormalizedAnalysis === 'function');
+          if (progressWaiter) progressWaiter.onNormalizedAnalysis(deepestNorm);
         }
       }
 
       const fallbackSnap =
-        getDeepestResult(results) ||
-        (payload?.bestmove ? { depth: 0, bestmove: payload.bestmove, evaluation: null, mate: null } : null);
+        deepestRaw ||
+        (payload?.bestmove ? { depth: 0, bestmove: payload.bestmove, ponder: payload.ponder || null, evaluation: null, mate: null } : null);
       const fallbackNormalized = fallbackSnap ? normalizeMujahiSnapshot(fallbackSnap, payload) : null;
+      if (fallbackNormalized) {
+        fallbackNormalized.depthSnapshots = Array.from(batch.resolvedSnapshots.values()).sort((a, b) => a.depth - b.depth);
+      }
 
       for (const waiter of batch.waiters) {
         if (!waiter.settled) {

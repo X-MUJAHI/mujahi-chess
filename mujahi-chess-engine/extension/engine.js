@@ -2,6 +2,42 @@
 const pieceToFen = { 'wp': 'P', 'wn': 'N', 'wb': 'B', 'wr': 'R', 'wq': 'Q', 'wk': 'K', 'bp': 'p', 'bn': 'n', 'bb': 'b', 'br': 'r', 'bq': 'q', 'bk': 'k' };
 const colToNum = { 'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5, 'f': 6, 'g': 7, 'h': 8 };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function randomIntInclusive(min, max) {
+    if (max <= min) return min;
+    const range = max - min + 1;
+    const cryptoApi = window.crypto;
+    if (cryptoApi?.getRandomValues) {
+        const limit = Math.floor(0x100000000 / range) * range;
+        const sample = new Uint32Array(1);
+        let value;
+        do { cryptoApi.getRandomValues(sample); value = sample[0]; } while (value >= limit);
+        return min + (value % range);
+    }
+    return min + Math.floor(Math.random() * range);
+}
+let pendingAutoPlayDelayCancel = null;
+function waitForAutoPlayDelay(ms, signal) {
+    if (ms <= 0) return Promise.resolve(!signal?.aborted);
+    return new Promise(resolve => {
+        let timer = null;
+        let settled = false;
+        const finish = completed => {
+            if (settled) return;
+            settled = true;
+            if (timer !== null) clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            if (pendingAutoPlayDelayCancel === cancel) pendingAutoPlayDelayCancel = null;
+            resolve(completed);
+        };
+        const onAbort = () => finish(false);
+        const cancel = () => finish(false);
+        if (signal?.aborted) { finish(false); return; }
+        pendingAutoPlayDelayCancel = cancel;
+        timer = setTimeout(() => finish(true), ms);
+        signal?.addEventListener('abort', onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+    });
+}
 function log(msg) { console.log(`[ChessEngine] ${msg}`); }
 
 let countdownInterval = null;
@@ -13,6 +49,12 @@ const engineInFlight = new Map();
 const databaseInFlight = new Map();
 const engineAnalysisCache = new Map();
 const superModeAuxCache = new Map();
+const superModeSnapshotsByFen = new Map();
+const otherGoodMovesCache = new Map();
+let otherGoodMovesController = null;
+let otherGoodMovesRequestKey = '';
+let otherGoodMovesCurrentFen = '';
+let otherGoodMovesRetryAfter = 0;
 function setBoundedCache(cache, key, value, limit = 300) { cache.delete(key); cache.set(key, value); if (cache.size > limit) cache.delete(cache.keys().next().value); }
 
 // --- LOCAL STOCKFISH 19 WASM BRIDGE ---
@@ -117,7 +159,7 @@ function handleMujahiError(error) {
         } else {
             window.showCustomModal(
                 'MUJAHI API Error',
-                `${message} (If Render Free tier just woke up, wait 30s and click the Refresh icon, or switch provider in Engine Settings.)`
+                `${message} (If Render Free tier just woke up, wait 30s and click the Refresh icon, or switch provider in Settings.)`
             );
         }
     }
@@ -168,7 +210,7 @@ function failLocalEngine(error) {
     log(`Local Stockfish error: ${localEngineFailure.message}`);
     if (!hasShownLocalEngineError && window.showCustomModal) {
         hasShownLocalEngineError = true;
-        window.showCustomModal('Local Stockfish unavailable', `${localEngineFailure.message} Check the two Stockfish 19 Lite files in the extension/engine folder, or switch back to Hosted API in Engine Settings.`);
+        window.showCustomModal('Local Stockfish unavailable', `${localEngineFailure.message} Check the two Stockfish 19 Lite files in the extension/engine folder, or switch back to Hosted API in Settings.`);
     }
 }
 function handleLocalEngineHostMessage(event) {
@@ -245,21 +287,47 @@ async function initializeLocalEngine() {
 }
 function parseLocalUciInfo(fen, line) {
     const depthMatch = line.match(/(?:^|\s)depth\s+(\d+)/);
-    const scoreMatch = line.match(/\bscore\s+(cp|mate)\s+(-?\d+)/);
+    const scoreMatch = line.match(/\bscore\s+(cp|mate)\s+(-?\d+)(?:\s+(lowerbound|upperbound))?/);
     const pvMatch = line.match(/\bpv\s+(.+)$/);
     if (!depthMatch || !pvMatch) return null;
     const depth = Number(depthMatch[1]);
-    const pv = pvMatch[1].trim();
-    const move = pv.split(/\s+/)[0];
+    const seldepthMatch = line.match(/\bseldepth\s+(\d+)/);
+    const nodesMatch = line.match(/\bnodes\s+(\d+)/);
+    const npsMatch = line.match(/\bnps\s+(\d+)/);
+    const timeMatch = line.match(/\btime\s+(\d+)/);
+    const pvText = pvMatch[1].trim();
+    const pvList = pvText.split(/\s+/).filter(m => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(m));
+    const move = pvList[0];
     if (!move || move === '(none)' || move === '0000') return null;
-    let evaluation = null, mate = null;
+    let evaluation = null, rawCp = null, mate = null;
+    const bound = scoreMatch?.[3] || 'exact';
     if (scoreMatch) {
         const scoreValue = Number(scoreMatch[2]);
         const whitePov = (fen.split(/\s+/)[1] || 'w') === 'b' ? -1 : 1;
-        if (scoreMatch[1] === 'cp') evaluation = (scoreValue / 100) * whitePov;
-        else mate = scoreValue * whitePov;
+        if (scoreMatch[1] === 'cp') {
+            rawCp = scoreValue * whitePov;
+            evaluation = rawCp / 100;
+        } else {
+            mate = scoreValue * whitePov;
+        }
     }
-    return { move, evaluation: Number.isFinite(evaluation) ? evaluation : null, mate: Number.isFinite(mate) ? mate : null, continuation: pv, depth, raw: { uci: line } };
+    return {
+        move,
+        ponder: pvList[1] || null,
+        evaluation: Number.isFinite(evaluation) ? evaluation : null,
+        rawCp: Number.isFinite(rawCp) ? rawCp : null,
+        mate: Number.isFinite(mate) ? mate : null,
+        bound,
+        pv: pvList,
+        continuation: pvText,
+        depth,
+        seldepth: seldepthMatch ? Number(seldepthMatch[1]) : null,
+        nodes: nodesMatch ? Number(nodesMatch[1]) : null,
+        nps: npsMatch ? Number(npsMatch[1]) : null,
+        time: timeMatch ? Number(timeMatch[1]) : null,
+        version: 'Stockfish 19 Lite',
+        raw: { uci: line }
+    };
 }
 function settleLocalWasmWaiter(job, waiter, move, error = null) {
     if (waiter.settled) return;
@@ -305,10 +373,9 @@ function handleLocalWasmLine(job, line) {
         job.latestAnalysis = analysis;
         const prior = engineAnalysisCache.get(job.fen);
         if (!prior || analysis.depth >= (prior.depth || 0)) {
-            engineAnalysisCache.set(job.fen, analysis);
             setBoundedCache(engineAnalysisCache, job.fen, analysis, 120);
-            handleSuperModeEngineAnalysis(job.fen, analysis);
         }
+        handleSuperModeEngineAnalysis(job.fen, analysis);
         resolveLocalWasmWaiters(job, analysis);
         return;
     }
@@ -397,7 +464,8 @@ function fetchLocalWasmBestMove(fen, depth, signal, cacheKey) {
 
 let activeAnalysisController = null;
 let cachedBoard = null;
-function clearFenCache() { fenCache.clear(); lichessFenCache.clear(); engineAnalysisCache.clear(); superModeAuxCache.clear(); log("FEN cache cleared"); }
+let lastFenWasNativeComplete = false;
+function clearFenCache() { fenCache.clear(); lichessFenCache.clear(); engineAnalysisCache.clear(); superModeAuxCache.clear(); superModeSnapshotsByFen.clear(); log("FEN cache cleared"); }
 
 // --- FREEMIUM ---
 function updateMoveUI() {
@@ -501,7 +569,56 @@ function getPieceElementOnSquare(sq) { const board = getBoard(); return board?.q
 function isMyPieceOnSquare(sq) { const el = getPieceElementOnSquare(sq); if (!el) return false; const my = getMyColor(); return el.classList.contains(`${my}p`) || el.classList.contains(`${my}n`) || el.classList.contains(`${my}b`) || el.classList.contains(`${my}r`) || el.classList.contains(`${my}q`) || el.classList.contains(`${my}k`); }
 function getMyColor() { const board = getBoard(); if (!board) return 'w'; return board.classList.contains('flipped') ? 'b' : 'w'; }
 function getActiveColor(board = getBoard()) { if (!board) return 'w'; const highlights = board.querySelectorAll('.highlight'); for (const hl of highlights) { const hlClass = Array.from(hl.classList).find(c => c.startsWith('square-')); if (!hlClass) continue; const piece = board.querySelector(`.piece.square-${hlClass.split('-')[1]}`); if (!piece) continue; if ([...piece.classList].some(c => c.startsWith('w'))) return 'b'; if ([...piece.classList].some(c => c.startsWith('b'))) return 'w'; } return 'w'; }
-function getFEN() { const boardEl = getBoard(); if (!boardEl) return null; const pieces = boardEl.querySelectorAll('.piece'); if (!pieces.length) return null; const board = Array(64).fill(null); for (const piece of pieces) { let type = null, square = null; for (const cls of piece.classList) { if (!type && pieceToFen[cls]) type = pieceToFen[cls]; else if (!square && cls.startsWith('square-')) square = cls.slice(7); } if (type && square && /^[1-8][1-8]$/.test(square)) { const file = Number(square[0]) - 1, rank = Number(square[1]); board[(8-rank)*8+file] = type; } } const rows=[]; for(let r=0;r<8;r++){let empty=0,row='';for(let c=0;c<8;c++){const v=board[r*8+c];if(v===null)empty++;else{if(empty){row+=empty;empty=0;}row+=v;}}if(empty)row+=empty;rows.push(row);} return rows.join('/') + ` ${getActiveColor(boardEl)} - - 0 1`; }
+function getNativeFullFen(boardEl) {
+    const candidates = [];
+    for (const method of ['getFen', 'getFEN', 'fen']) {
+        try { if (typeof boardEl?.[method] === 'function') candidates.push(boardEl[method]()); } catch (_) {}
+    }
+    for (const value of [boardEl?.fen, boardEl?.position, boardEl?.getAttribute?.('fen'), boardEl?.getAttribute?.('data-fen'), boardEl?.dataset?.fen]) {
+        if (typeof value === 'string') candidates.push(value);
+    }
+    for (const candidate of candidates) {
+        if (typeof candidate !== 'string') continue;
+        const fields = candidate.trim().split(/\s+/);
+        if (fields.length < 4 || !/^[prnbqkPRNBQK1-8/]+$/.test(fields[0]) || !/^[wb]$/.test(fields[1]) || !/^(?:-|K?Q?k?q?)$/.test(fields[2]) || !/^(?:-|[a-h][36])$/.test(fields[3])) continue;
+        return [...fields.slice(0, 4), fields[4] || '0', fields[5] || '1'].join(' ');
+    }
+    return null;
+}
+function getFEN() {
+    const boardEl = getBoard();
+    if (!boardEl) return null;
+    const nativeFen = getNativeFullFen(boardEl);
+    if (nativeFen) { lastFenWasNativeComplete = true; return nativeFen; }
+    lastFenWasNativeComplete = false;
+    const pieces = boardEl.querySelectorAll('.piece');
+    if (!pieces.length) return null;
+    const board = Array(64).fill(null);
+    for (const piece of pieces) {
+        let type = null, square = null;
+        for (const cls of piece.classList) {
+            if (!type && pieceToFen[cls]) type = pieceToFen[cls];
+            else if (!square && cls.startsWith('square-')) square = cls.slice(7);
+        }
+        if (type && square && /^[1-8][1-8]$/.test(square)) {
+            const file = Number(square[0]) - 1, rank = Number(square[1]);
+            board[(8-rank)*8+file] = type;
+        }
+    }
+    const rows = [];
+    for (let r=0; r<8; r++) {
+        let empty=0, row='';
+        for (let c=0; c<8; c++) {
+            const value=board[r*8+c];
+            if (value===null) empty++;
+            else { if (empty) { row+=empty; empty=0; } row+=value; }
+        }
+        if (empty) row+=empty;
+        rows.push(row);
+    }
+    // Chess.com piece DOM does not expose castling/en-passant state in this fallback.
+    return rows.join('/') + ` ${getActiveColor(boardEl)} - - 0 1`;
+}
 
 // --- API CALLS ---
 const MAX_API_RETRIES = 2; // retries after the first attempt
@@ -545,6 +662,132 @@ async function fetchJsonWithRetry(url, options, service) {
     return null;
 }
 
+function renderOtherGoodMovesState({ status = '', data = null, count = 2, fenComplete = lastFenWasNativeComplete } = {}) {
+    const card = document.getElementById('ch-other-good-moves-card');
+    const list = document.getElementById('ch-other-good-moves-list');
+    const note = document.getElementById('ch-other-good-moves-note');
+    const countLabel = document.getElementById('ch-other-good-moves-count-label');
+    if (!card || !list || !note) return;
+    const cfg = window.chessHelper?.otherGoodMoves || {};
+    if (!cfg.enabled) { card.style.display = 'none'; return; }
+    card.style.display = 'block';
+    if (countLabel) countLabel.textContent = `${count} alternative${count === 1 ? '' : 's'}`;
+    list.replaceChildren();
+
+    const addStatus = message => {
+        const item = document.createElement('span');
+        item.className = 'ch-other-good-moves-status';
+        item.textContent = message;
+        list.appendChild(item);
+    };
+    if (status) { addStatus(status); note.textContent = fenComplete ? 'Lichess Cloud Eval · Cached position analysis' : 'Simplified board FEN · castling/en-passant rights may be missing.'; return; }
+
+    const pvs = Array.isArray(data?.pvs) ? data.pvs.slice(1, count + 1) : [];
+    if (!pvs.length) {
+        addStatus('No cached alternative lines are available for this position.');
+        note.textContent = lastFenWasNativeComplete ? 'Lichess Cloud Eval · Only positions already in its cache are available.' : 'Simplified board FEN · castling/en-passant rights may be missing, so results may not match this exact position.';
+        return;
+    }
+
+    pvs.forEach((pv, index) => {
+        const firstMove = String(pv?.moves || '').trim().split(/\s+/)[0] || '';
+        const match = firstMove.match(/^([a-h][1-8])([a-h][1-8])([qrbn])?$/);
+        if (!match) return;
+        const row = document.createElement('div');
+        row.className = 'ch-other-good-move-row';
+        const move = document.createElement('strong');
+        move.textContent = `${match[1]} → ${match[2]}${match[3] ? `=${match[3].toUpperCase()}` : ''}`;
+        const score = document.createElement('span');
+        if (pv.cp !== undefined && pv.cp !== null && Number.isFinite(Number(pv.cp))) {
+            const cp = Number(pv.cp) / 100;
+            score.textContent = `White ${cp > 0 ? '+' : ''}${cp.toFixed(2)}`;
+        } else if (pv.mate !== undefined && pv.mate !== null && Number.isFinite(Number(pv.mate))) {
+            const mate = Number(pv.mate);
+            score.textContent = `White M${mate > 0 ? '+' : ''}${mate}`;
+        } else {
+            score.textContent = `Alternative ${index + 1}`;
+        }
+        row.append(move, score);
+        list.appendChild(row);
+    });
+    if (!list.childElementCount) addStatus('No readable alternative moves were returned.');
+    const depth = Number(data.depth) || 0;
+    note.textContent = lastFenWasNativeComplete
+        ? `Lichess Cloud Eval · Depth ${depth || '—'} · Cached analysis, independent of selected engine depth`
+        : `Lichess Cloud Eval · Depth ${depth || '—'} · FEN rights may be incomplete; verify the position before relying on these moves`;
+}
+
+async function loadOtherGoodMoves(fen) {
+    const cfg = window.chessHelper?.otherGoodMoves || {};
+    const count = Math.max(1, Math.min(4, Number.parseInt(cfg.count, 10) || 2));
+    if (!cfg.enabled || !fen) {
+        if (otherGoodMovesController) otherGoodMovesController.abort();
+        otherGoodMovesController = null;
+        otherGoodMovesRequestKey = '';
+        renderOtherGoodMovesState({ count });
+        return;
+    }
+
+    const requestKey = `${fen}|${count}`;
+    const fenComplete = lastFenWasNativeComplete;
+    otherGoodMovesCurrentFen = fen;
+    if (otherGoodMovesRequestKey === requestKey) return;
+    otherGoodMovesRequestKey = requestKey;
+    if (otherGoodMovesController) otherGoodMovesController.abort();
+
+    const cached = otherGoodMovesCache.get(requestKey);
+    if (cached) {
+        renderOtherGoodMovesState({ data: cached, count, fenComplete });
+        return;
+    }
+
+    if (Date.now() < otherGoodMovesRetryAfter) {
+        renderOtherGoodMovesState({ status: 'Lichess temporarily rate-limited requests. Try again after about one minute.', count, fenComplete });
+        return;
+    }
+    const controller = new AbortController();
+    otherGoodMovesController = controller;
+    renderOtherGoodMovesState({ status: 'Loading alternative moves…', count, fenComplete });
+    const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=${count + 1}`;
+    try {
+        // Lichess recommends a single outstanding API request and a full-minute pause after HTTP 429.
+        const response = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+        if (response.status === 429) {
+            otherGoodMovesRetryAfter = Date.now() + 60000;
+            throw new Error('Lichess rate limit reached. Wait about one minute before requesting alternatives again.');
+        }
+        const data = response.ok ? await response.json() : null;
+        if (controller.signal.aborted || otherGoodMovesCurrentFen !== fen || otherGoodMovesRequestKey !== requestKey) return;
+        const result = data && Array.isArray(data.pvs) ? data : null;
+        otherGoodMovesCache.set(requestKey, result || { pvs: [], depth: 0 });
+        if (otherGoodMovesCache.size > 180) otherGoodMovesCache.delete(otherGoodMovesCache.keys().next().value);
+        if (result) {
+            renderOtherGoodMovesState({ data: result, count, fenComplete });
+        } else {
+            renderOtherGoodMovesState({ status: response.status === 404 ? 'No cached alternatives are available for this position.' : `Lichess Cloud Eval returned HTTP ${response.status}.`, count, fenComplete });
+        }
+    } catch (error) {
+        if (error?.name === 'AbortError' || controller.signal.aborted) return;
+        if (otherGoodMovesCurrentFen === fen && otherGoodMovesRequestKey === requestKey) {
+            renderOtherGoodMovesState({ status: error?.message || 'Could not load alternative moves. Check your connection and try again.', count, fenComplete });
+        }
+    } finally {
+        if (otherGoodMovesController === controller) otherGoodMovesController = null;
+    }
+}
+
+function refreshOtherGoodMoves() {
+    otherGoodMovesRequestKey = '';
+    const fen = getFEN();
+    const count = Math.max(1, Math.min(4, Number.parseInt(window.chessHelper?.otherGoodMoves?.count, 10) || 2));
+    if (fen) {
+        otherGoodMovesCache.delete(`${fen}|${count}`);
+        loadOtherGoodMoves(fen);
+    } else {
+        renderOtherGoodMovesState({ count });
+    }
+}
+
 async function fetchEngineBestMove(fen, depth, signal = null) {
     const provider = getEngineProvider();
     const cacheKey = `${provider}|${fen}|${depth}`;
@@ -569,8 +812,8 @@ async function fetchEngineBestMove(fen, depth, signal = null) {
                     const prior = engineAnalysisCache.get(fen);
                     if (!prior || analysis.depth >= (prior.depth || 0)) {
                         setBoundedCache(engineAnalysisCache, fen, analysis, 120);
-                        handleSuperModeEngineAnalysis(fen, analysis);
                     }
+                    handleSuperModeEngineAnalysis(fen, analysis);
                     if (analysis.move) {
                         setBoundedCache(fenCache, `mujahi|${fen}|${analysis.depth}`, analysis.move);
                     }
@@ -595,21 +838,28 @@ async function fetchEngineBestMove(fen, depth, signal = null) {
                 const evaluation = rawEval === null || rawEval === undefined || rawEval === '' ? null : Number(rawEval);
                 const rawMate = data.mate;
                 const mate = rawMate === null || rawMate === undefined || rawMate === '' || rawMate === 'null' ? null : Number(rawMate);
+                const continuationStr = typeof data.continuation === 'string' ? data.continuation : '';
+                const pvList = continuationStr.trim().split(/\s+/).filter(Boolean);
+                const ponder = pvList[1] || (data.bestmove.split(' ')[3] || null);
                 const analysis = {
                     move,
+                    ponder: ponder && ponder !== '(none)' ? ponder : null,
                     evaluation: Number.isFinite(evaluation) ? evaluation : null,
+                    rawCp: Number.isFinite(evaluation) ? Math.round(evaluation * 100) : null,
                     mate: Number.isFinite(mate) ? mate : null,
-                    continuation: typeof data.continuation === 'string' ? data.continuation : '',
+                    bound: 'exact',
+                    pv: pvList,
+                    continuation: continuationStr,
                     depth: Number(data.depth) || Number(depth) || 0,
+                    version: 'Hosted Stockfish',
                     raw: data
                 };
                 setBoundedCache(fenCache, cacheKey, move);
                 const prior = engineAnalysisCache.get(fen);
                 if (!prior || analysis.depth >= prior.depth) {
-                    engineAnalysisCache.set(fen, analysis);
                     setBoundedCache(engineAnalysisCache, fen, analysis, 120);
-                    handleSuperModeEngineAnalysis(fen, analysis);
                 }
+                handleSuperModeEngineAnalysis(fen, analysis);
                 return move;
             }
         }
@@ -649,6 +899,7 @@ function setEngineProvider(provider) {
     fenCache.clear();
     engineInFlight.clear();
     engineAnalysisCache.clear();
+    superModeSnapshotsByFen.clear();
     if (window.chessHelper) window.chessHelper.engineProvider = next;
     localStorage.setItem('ch_engine_provider', next);
     if (next !== 'wasm') {
@@ -680,7 +931,7 @@ async function fetchDatabaseBestMove(fen, signal = null) {
         const data = await fetchJsonWithRetry(url, opts, 'Lichess database');
         if (data === false) return false;
         if (data?.moves?.length) {
-            const sorted = [...data.moves].sort((a,b)=>(b.white+b.draws+b.black)-(a.white+a.draws+a.black));
+            const sorted = [...data.moves].sort((a,b)=>(b.white+b.draws+b.black)-(a.white+b.draws+b.black));
             const move = sorted[0]?.uci;
             if (move) { setBoundedCache(lichessFenCache, fen, move); return move; }
         }
@@ -690,7 +941,7 @@ async function fetchDatabaseBestMove(fen, signal = null) {
     try { return await request; } finally { if (databaseInFlight.get(fen) === request) databaseInFlight.delete(fen); }
 }
 
-// --- SUPERMODE: OPTIONAL CHESS INTELLIGENCE ---
+// --- SUPERMODE: CONFIGURABLE CHESS INTELLIGENCE ---
 const SUPER_PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 const SUPER_START_COUNTS = { p: 8, n: 2, b: 2, r: 2, q: 1 };
 let superModeAuxController = null;
@@ -711,7 +962,80 @@ let superModeOverlayRenderKey = '';
 
 function getSuperModeConfig() {
     const cfg = window.chessHelper || {};
-    return { enabled: !!cfg.superModeEnabled && cfg.masterToggle !== false, features: cfg.superModeFeatures || {} };
+    const opts = cfg.superModeOptions || {};
+    const pvPlies = Math.max(2, Math.min(5, Number.parseInt(opts.pvPlies, 10) || 3));
+    const hudCorner = opts.hudCorner === 'bottom-left' ? 'bottom-left' : 'top-left';
+    const hudCompact = Boolean(opts.hudCompact);
+    return {
+        enabled: !!cfg.superModeEnabled && cfg.masterToggle !== false,
+        features: cfg.superModeFeatures || {},
+        options: { pvPlies, hudCorner, hudCompact }
+    };
+}
+function fmtMoveArrow(uci) {
+    if (!uci || uci.length < 4) return String(uci || '');
+    return `${uci.slice(0, 2)}→${uci.slice(2, 4)}${uci[4] ? `=${uci[4].toUpperCase()}` : ''}`;
+}
+function fmtCompactNum(n) {
+    if (!Number.isFinite(n)) return '—';
+    if (n >= 1000000) return `${(n / 1000000).toFixed(2)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(Math.round(n));
+}
+function computeWhiteWinPercent(analysis) {
+    if (!analysis) return null;
+    if (analysis.mate !== null && analysis.mate !== undefined && Number.isFinite(Number(analysis.mate))) {
+        const m = Number(analysis.mate);
+        if (m > 0) return 100;
+        if (m < 0) return 0;
+    }
+    const cp = Number.isFinite(Number(analysis.rawCp))
+        ? Number(analysis.rawCp)
+        : Number.isFinite(Number(analysis.evaluation))
+            ? Number(analysis.evaluation) * 100
+            : null;
+    if (cp === null || !Number.isFinite(cp)) return null;
+    const clampedCp = Math.max(-4000, Math.min(4000, cp));
+    return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * clampedCp)) - 1);
+}
+function recordSuperModeDepthSnapshot(fen, analysis) {
+    if (!fen || !analysis) return;
+    let fenMap = superModeSnapshotsByFen.get(fen);
+    if (!fenMap) {
+        fenMap = new Map();
+        superModeSnapshotsByFen.set(fen, fenMap);
+        if (superModeSnapshotsByFen.size > 120) {
+            superModeSnapshotsByFen.delete(superModeSnapshotsByFen.keys().next().value);
+        }
+    }
+    if (Array.isArray(analysis.depthSnapshots)) {
+        for (const snap of analysis.depthSnapshots) {
+            if (snap && snap.depth > 0 && snap.move) fenMap.set(snap.depth, snap);
+        }
+    }
+    if (analysis.depth > 0 && analysis.move) {
+        fenMap.set(analysis.depth, analysis);
+    }
+}
+function getConsensusSummary(fen) {
+    const fenMap = superModeSnapshotsByFen.get(fen);
+    if (!fenMap || fenMap.size < 2) return null;
+    const ordered = Array.from(fenMap.values()).sort((a, b) => a.depth - b.depth);
+    const shallow = ordered[0];
+    const deep = ordered[ordered.length - 1];
+    if (!shallow || !deep || deep.depth <= shallow.depth || !shallow.move || !deep.move) return null;
+    const agreed = shallow.move === deep.move;
+    const evalDelta = Number.isFinite(shallow.evaluation) && Number.isFinite(deep.evaluation)
+        ? deep.evaluation - shallow.evaluation
+        : null;
+    return {
+        agreed,
+        shallowDepth: shallow.depth,
+        shallowMove: shallow.move,
+        deepDepth: deep.depth,
+        deepMove: deep.move,
+        evalDelta
+    };
 }
 function fenToPieceBoard(fen) {
     const placement = (fen || '').split(' ')[0];
@@ -820,7 +1144,7 @@ function detectLastMoveSquares(previousFen, currentFen) {
     if (fromIndex === undefined) return { from: null, to: after[toIndex].square, mover };
     return { from: before[fromIndex].square, to: after[toIndex].square, mover };
 }
-function addSuperOpponentArrow(parent, uci, flipped) {
+function addSuperArrowSvg(parent, uci, flipped, { className, markerId, fill }) {
     if (!uci || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(uci)) return;
     const from = superModeSquarePosition(uci.slice(0, 2), flipped);
     const to = superModeSquarePosition(uci.slice(2, 4), flipped);
@@ -829,10 +1153,10 @@ function addSuperOpponentArrow(parent, uci, flipped) {
     const svg = document.createElementNS(svgNS, 'svg');
     svg.setAttribute('viewBox', '0 0 100 100');
     svg.setAttribute('preserveAspectRatio', 'none');
-    svg.classList.add('ch-sm-opponent-arrow');
+    svg.classList.add(className);
     const defs = document.createElementNS(svgNS, 'defs');
     const marker = document.createElementNS(svgNS, 'marker');
-    marker.setAttribute('id', 'ch-sm-opponent-arrowhead');
+    marker.setAttribute('id', markerId);
     marker.setAttribute('markerWidth', '5');
     marker.setAttribute('markerHeight', '5');
     marker.setAttribute('refX', '4');
@@ -840,7 +1164,7 @@ function addSuperOpponentArrow(parent, uci, flipped) {
     marker.setAttribute('orient', 'auto');
     const tip = document.createElementNS(svgNS, 'path');
     tip.setAttribute('d', 'M0,0 L5,2.5 L0,5 Z');
-    tip.setAttribute('fill', '#c084fc');
+    tip.setAttribute('fill', fill);
     marker.appendChild(tip);
     defs.appendChild(marker);
     svg.appendChild(defs);
@@ -849,9 +1173,116 @@ function addSuperOpponentArrow(parent, uci, flipped) {
     line.setAttribute('y1', String((from.y + 0.5) * 12.5));
     line.setAttribute('x2', String((to.x + 0.5) * 12.5));
     line.setAttribute('y2', String((to.y + 0.5) * 12.5));
-    line.setAttribute('marker-end', 'url(#ch-sm-opponent-arrowhead)');
+    line.setAttribute('marker-end', `url(#${markerId})`);
     svg.appendChild(line);
     parent.appendChild(svg);
+}
+function addSuperOpponentArrow(parent, uci, flipped) {
+    addSuperArrowSvg(parent, uci, flipped, {
+        className: 'ch-sm-opponent-arrow',
+        markerId: 'ch-sm-opponent-arrowhead',
+        fill: '#c084fc'
+    });
+}
+function addSuperPonderArrow(parent, uci, flipped) {
+    addSuperArrowSvg(parent, uci, flipped, {
+        className: 'ch-sm-ponder-arrow',
+        markerId: 'ch-sm-ponder-arrowhead',
+        fill: '#f59e0b'
+    });
+}
+function addSuperPvLineOverlay(parent, pvList, flipped, myTurn) {
+    if (!Array.isArray(pvList) || pvList.length < 2) return;
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.classList.add('ch-sm-pv-svg');
+
+    for (let idx = 1; idx < pvList.length; idx++) {
+        const uci = pvList[idx];
+        if (!uci || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(uci)) continue;
+        const from = superModeSquarePosition(uci.slice(0, 2), flipped);
+        const to = superModeSquarePosition(uci.slice(2, 4), flipped);
+        if (!from || !to) continue;
+        const isMyStep = myTurn ? (idx % 2 === 0) : (idx % 2 === 1);
+        const stroke = isMyStep ? 'rgba(56, 189, 248, 0.72)' : 'rgba(245, 158, 11, 0.72)';
+
+        const line = document.createElementNS(svgNS, 'line');
+        line.setAttribute('x1', String((from.x + 0.5) * 12.5));
+        line.setAttribute('y1', String((from.y + 0.5) * 12.5));
+        line.setAttribute('x2', String((to.x + 0.5) * 12.5));
+        line.setAttribute('y2', String((to.y + 0.5) * 12.5));
+        line.setAttribute('stroke', stroke);
+        svg.appendChild(line);
+
+        const cell = document.createElement('div');
+        cell.className = `ch-sm-board-cell ch-sm-pv-cell ${isMyStep ? 'is-my-ply' : 'is-opp-ply'}`;
+        cell.style.left = `${to.x * 12.5}%`;
+        cell.style.top = `${to.y * 12.5}%`;
+        const badge = document.createElement('span');
+        badge.className = 'ch-sm-pv-step';
+        badge.textContent = String(idx + 1);
+        cell.appendChild(badge);
+        parent.appendChild(cell);
+    }
+    if (svg.childElementCount) parent.appendChild(svg);
+}
+function addSuperEvalSparkline(hud, sessionItems, myColor) {
+    const scored = sessionItems.filter(item => Number.isFinite(item.evaluation) || Number.isFinite(item.mate)).slice(-24);
+    if (scored.length < 2) return;
+    const vals = scored.map(item => {
+        if (item.mate !== null && item.mate !== undefined && Number.isFinite(item.mate)) {
+            return item.mate > 0 ? 6 : -6;
+        }
+        return Math.max(-6, Math.min(6, Number(item.evaluation) || 0));
+    });
+    const wrap = document.createElement('div');
+    wrap.className = 'ch-sm-hud-item ch-sm-hud-sparkline';
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 22');
+    svg.setAttribute('width', '96');
+    svg.setAttribute('height', '20');
+
+    const mid = document.createElementNS(svgNS, 'line');
+    mid.setAttribute('x1', '0');
+    mid.setAttribute('y1', '11');
+    mid.setAttribute('x2', '100');
+    mid.setAttribute('y2', '11');
+    mid.setAttribute('stroke', 'rgba(255,255,255,0.18)');
+    mid.setAttribute('stroke-width', '0.8');
+    mid.setAttribute('stroke-dasharray', '2 2');
+    svg.appendChild(mid);
+
+    const points = vals.map((v, i) => {
+        const x = (i / Math.max(1, vals.length - 1)) * 96 + 2;
+        const y = 11 - (v / 6) * 9;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const lastVal = vals[vals.length - 1];
+    const isGoodForMe = myColor === 'w' ? lastVal >= 0 : lastVal <= 0;
+    const strokeColor = Math.abs(lastVal) < 0.35 ? '#93c5fd' : (isGoodForMe ? '#4ade80' : '#f87171');
+
+    const poly = document.createElementNS(svgNS, 'polyline');
+    poly.setAttribute('fill', 'none');
+    poly.setAttribute('stroke', strokeColor);
+    poly.setAttribute('stroke-width', '1.6');
+    poly.setAttribute('stroke-linecap', 'round');
+    poly.setAttribute('stroke-linejoin', 'round');
+    poly.setAttribute('points', points);
+    svg.appendChild(poly);
+
+    const lastCoords = points.split(' ').pop().split(',');
+    const dot = document.createElementNS(svgNS, 'circle');
+    dot.setAttribute('cx', lastCoords[0]);
+    dot.setAttribute('cy', lastCoords[1]);
+    dot.setAttribute('r', '2');
+    dot.setAttribute('fill', strokeColor);
+    svg.appendChild(dot);
+
+    wrap.appendChild(svg);
+    hud.appendChild(wrap);
 }
 function superModeClearBoardOverlay() {
     if (superModeBoardOverlay?.isConnected) superModeBoardOverlay.remove();
@@ -910,16 +1341,26 @@ function renderSuperModeBoard(fen = superModeCurrentFen) {
     const boardEl = getBoard();
     if (!boardEl) return;
     const f = cfg.features;
+    const opts = cfg.options;
     const flipped = boardEl.classList.contains('flipped');
     const activeAnalysis = superModeLatestAnalysis && superModeLatestAnalysis.fen === fen ? superModeLatestAnalysis : null;
     const displayedAnalysis = activeAnalysis || superModeLatestAnalysis;
     const moveEvent = superModeMoveEvent && superModeMoveEvent.fen === fen ? superModeMoveEvent : null;
     const opponentMove = superModeOpponentBestMove && superModeOpponentBestMove.fen === fen && (fen.split(' ')[1] || 'w') !== getMyColor() ? superModeOpponentBestMove : null;
+    const consensus = f.depthConsensus ? getConsensusSummary(fen) : null;
+    const pvList = activeAnalysis
+        ? (Array.isArray(activeAnalysis.pv) && activeAnalysis.pv.length
+            ? activeAnalysis.pv
+            : (typeof activeAnalysis.continuation === 'string' ? activeAnalysis.continuation.trim().split(/\s+/).filter(Boolean) : []))
+        : [];
     const renderKey = JSON.stringify({
-        fen, flipped, features: f,
-        eval: displayedAnalysis ? [displayedAnalysis.evaluation, displayedAnalysis.mate, displayedAnalysis.depth] : (superModeLastEval ? [superModeLastEval.evaluation, superModeLastEval.depth] : null),
+        fen, flipped, features: f, options: opts,
+        eval: displayedAnalysis ? [displayedAnalysis.evaluation, displayedAnalysis.rawCp, displayedAnalysis.mate, displayedAnalysis.depth, displayedAnalysis.nps, displayedAnalysis.time, displayedAnalysis.bound, displayedAnalysis.cached, displayedAnalysis.ponder, displayedAnalysis.continuation] : (superModeLastEval ? [superModeLastEval.evaluation, superModeLastEval.depth] : null),
         moveQuality: superModeMoveQuality,
         moveEvent, opponentMove: opponentMove?.move || '',
+        consensus,
+        pvSlice: f.pvLine ? pvList.slice(0, opts.pvPlies) : null,
+        sessionLen: f.evalGraph ? superModeSession.length : 0,
         alternatives: superModeApiData.alternatives?.pvs?.[1]?.moves || superModeApiData.alternatives?.message || '',
         opening: superModeApiData.opening?.moves?.[0]?.uci || superModeApiData.opening?.message || '',
         tablebase: [superModeApiData.tablebase?.category, superModeApiData.tablebase?.dtz, superModeApiData.tablebase?.message],
@@ -933,7 +1374,11 @@ function renderSuperModeBoard(fen = superModeCurrentFen) {
     overlay.replaceChildren();
     superModeOverlayRenderKey = renderKey;
     const hud = document.createElement('div');
-    hud.className = 'ch-sm-board-hud';
+    hud.className = [
+        'ch-sm-board-hud',
+        opts.hudCorner === 'bottom-left' ? 'is-bottom-left' : '',
+        opts.hudCompact ? 'is-compact' : ''
+    ].filter(Boolean).join(' ');
 
     if (f.hanging) for (const piece of local.hanging) addSuperSquareMark(overlay, piece.square, flipped, 'is-hanging', '!');
     if (f.threats) {
@@ -941,6 +1386,27 @@ function renderSuperModeBoard(fen = superModeCurrentFen) {
         for (const piece of local.attacked) if (!already.has(piece.square)) addSuperSquareMark(overlay, piece.square, flipped, 'is-attacked', '×');
     }
     if (f.activity) for (const square of local.centerControlledSquares) addSuperSquareMark(overlay, square, flipped, 'is-center', '');
+
+    if (f.pvLine && activeAnalysis && pvList.length >= 2) {
+        const slicedPv = pvList.slice(0, opts.pvPlies);
+        const myTurnNow = (fen.split(' ')[1] || 'w') === local.myColor;
+        addSuperPvLineOverlay(overlay, slicedPv, flipped, myTurnNow);
+        addSuperHud(hud, `LINE ${slicedPv.join(' ')}`, 'is-pv');
+    }
+
+    if (f.ponderArrow && activeAnalysis) {
+        const myTurnNow = (fen.split(' ')[1] || 'w') === local.myColor;
+        const ponderUci = activeAnalysis.ponder || (pvList[1] || '');
+        if (ponderUci && /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(ponderUci)) {
+            if (myTurnNow) {
+                addSuperPonderArrow(overlay, ponderUci, flipped);
+                addSuperHud(hud, `REPLY ${fmtMoveArrow(ponderUci)}`, 'is-ponder');
+            } else if (!opponentMove) {
+                addSuperPonderArrow(overlay, ponderUci, flipped);
+                addSuperHud(hud, `NEXT ${fmtMoveArrow(ponderUci)}`, 'is-ponder');
+            }
+        }
+    }
 
     if (f.material) {
         const diff = local.material[local.myColor] - local.material[local.myColor === 'w' ? 'b' : 'w'];
@@ -967,9 +1433,26 @@ function renderSuperModeBoard(fen = superModeCurrentFen) {
         track.appendChild(fill);
         overlay.appendChild(track);
     }
+    if (f.winChance) {
+        const winSource = (displayedAnalysis && (Number.isFinite(displayedAnalysis.evaluation) || displayedAnalysis.mate !== null))
+            ? displayedAnalysis
+            : superModeLastEval;
+        const whiteWin = computeWhiteWinPercent(winSource);
+        if (whiteWin !== null) {
+            const myWin = Math.round(local.myColor === 'w' ? whiteWin : 100 - whiteWin);
+            addSuperHud(hud, `WIN ${myWin}%`, myWin >= 58 ? 'is-positive' : myWin <= 42 ? 'is-negative' : 'is-eval');
+        }
+    }
     if (f.mate) {
         const a = superModeLatestAnalysis;
         if (a && a.fen === fen && a.mate !== null) addSuperHud(hud, `MATE ${Math.abs(a.mate)}`, 'is-mate');
+    }
+    if (f.depthConsensus && consensus) {
+        if (consensus.agreed) {
+            addSuperHud(hud, `D${consensus.shallowDepth}=D${consensus.deepDepth} LOCKED · ${fmtMoveArrow(consensus.deepMove)}`, 'is-consensus-locked');
+        } else {
+            addSuperHud(hud, `TRAP SHIFT · D${consensus.shallowDepth} ${fmtMoveArrow(consensus.shallowMove)} → D${consensus.deepDepth} ${fmtMoveArrow(consensus.deepMove)}`, 'is-warning');
+        }
     }
     if (f.moveQuality && superModeMoveQuality) {
         const qualityMatch = superModeMoveQuality.match(/^(Blunder|Mistake|Inaccuracy|Strong move) estimate · eval (loss|gain) ([0-9.]+)/i);
@@ -993,6 +1476,24 @@ function renderSuperModeBoard(fen = superModeCurrentFen) {
         addSuperOpponentArrow(overlay, opponentMove.move, flipped);
     }
 
+    if (f.engineTelemetry && activeAnalysis) {
+        const parts = [];
+        const ver = String(activeAnalysis.version || '').includes('19') ? 'SF19' : 'ENG';
+        parts.push(`${ver} D${activeAnalysis.depth || '—'}${activeAnalysis.seldepth ? `/${activeAnalysis.seldepth}` : ''}`);
+        if (Number.isFinite(activeAnalysis.nps)) parts.push(`${fmtCompactNum(activeAnalysis.nps)} nps`);
+        if (Number.isFinite(activeAnalysis.time)) parts.push(activeAnalysis.time >= 1000 ? `${(activeAnalysis.time / 1000).toFixed(1)}s` : `${activeAnalysis.time}ms`);
+        if (activeAnalysis.cached) parts.push('CACHED');
+        else if (activeAnalysis.deduplicated) parts.push('SHARED');
+        if (activeAnalysis.bound === 'lowerbound') parts.push('LOWER');
+        else if (activeAnalysis.bound === 'upperbound') parts.push('UPPER');
+        if (activeAnalysis.terminal) parts.push('TERMINAL');
+        addSuperHud(hud, parts.join(' · '), 'is-telemetry');
+    }
+
+    if (f.evalGraph) {
+        addSuperEvalSparkline(hud, superModeSession, local.myColor);
+    }
+
     if (f.alternatives) {
         const alt = superModeApiData.alternatives;
         const line = alt?.pvs?.[1]?.moves;
@@ -1009,7 +1510,6 @@ function renderSuperModeBoard(fen = superModeCurrentFen) {
     if (f.tablebase) {
         const tb = superModeApiData.tablebase;
         if (tb?.category) addSuperHud(hud, `TABLEBASE ${String(tb.category).toUpperCase()} · DTZ ${tb.dtz ?? '—'}`, 'is-lookup');
-        
     }
     if (f.review && superModeSessionReview) addSuperHud(hud, superModeSessionReview, 'is-review');
     if (hud.childElementCount) overlay.appendChild(hud);
@@ -1030,10 +1530,19 @@ function updateSuperModeLocal(fen) {
 }
 function handleSuperModeEngineAnalysis(fen, analysis) {
     if (getFEN() !== fen) return;
+    recordSuperModeDepthSnapshot(fen, analysis);
+
     // Keep a tiny in-memory evaluation trail from normal engine results. This adds no API calls
     // and allows Post-game review to be enabled after a game has started.
     const priorSessionIndex = superModeSession.findIndex(item => item.fen === fen);
-    const sessionItem = { fen, evaluation: analysis.evaluation, mate: analysis.mate, depth: analysis.depth, at: Date.now() };
+    const sessionItem = {
+        fen,
+        evaluation: analysis.evaluation,
+        rawCp: analysis.rawCp ?? null,
+        mate: analysis.mate,
+        depth: analysis.depth,
+        at: Date.now()
+    };
     if (priorSessionIndex >= 0) {
         if ((analysis.depth || 0) >= (superModeSession[priorSessionIndex].depth || 0)) superModeSession[priorSessionIndex] = sessionItem;
     } else {
@@ -1042,6 +1551,8 @@ function handleSuperModeEngineAnalysis(fen, analysis) {
     }
     const cfg = getSuperModeConfig();
     if (!cfg.enabled) return;
+
+    const currentDepthOnFen = superModeLatestAnalysis?.fen === fen ? (superModeLatestAnalysis.depth || 0) : 0;
     if (analysis.evaluation !== null && Number.isFinite(analysis.evaluation)) {
         const previous = superModeLastEval;
         if (previous && previous.fen !== fen && Number.isFinite(previous.evaluation)) {
@@ -1060,15 +1571,23 @@ function handleSuperModeEngineAnalysis(fen, analysis) {
             else if (gain >= 0.35) superModeMoveQuality = `Strong move estimate · eval gain ${gain.toFixed(2)}`;
             else superModeMoveQuality = `Small evaluation change · ${gain >= 0 ? '+' : ''}${gain.toFixed(2)} from the last observed position`;
         }
-        superModeLastEval = { fen, evaluation: analysis.evaluation, depth: analysis.depth };
+        if ((analysis.depth || 0) >= currentDepthOnFen) {
+            superModeLastEval = { fen, evaluation: analysis.evaluation, rawCp: analysis.rawCp ?? null, mate: analysis.mate ?? null, depth: analysis.depth };
+        }
     }
-    superModeLatestAnalysis = { ...analysis, fen };
+    if ((analysis.depth || 0) >= currentDepthOnFen) {
+        superModeLatestAnalysis = { ...analysis, fen };
+    }
     renderSuperModeBoard(fen);
 }
 function requestSuperModeOpponentBestMove(fen) {
     const cfg = getSuperModeConfig();
     const features = cfg.features || {};
-    const needsOpponentAnalysis = !!(features.opponentBestMove || features.evaluation || features.mate || features.moveQuality || features.blunders || features.evalDrop);
+    const needsOpponentAnalysis = !!(
+        features.opponentBestMove || features.evaluation || features.mate || features.moveQuality ||
+        features.blunders || features.evalDrop || features.ponderArrow || features.pvLine ||
+        features.depthConsensus || features.winChance || features.engineTelemetry || features.evalGraph
+    );
     if (!cfg.enabled || !needsOpponentAnalysis || (fen.split(' ')[1] || 'w') === getMyColor()) return;
     if (superModeOpponentBestMove?.fen === fen || superModeOpponentRequestFen === fen) return;
     superModeOpponentRequestFen = fen;
@@ -1079,7 +1598,7 @@ function requestSuperModeOpponentBestMove(fen) {
     const depth = Math.max(1, Math.min(20, Math.max(0, ...visibleDepths) || fallbackDepth));
     fetchEngineBestMove(fen, depth, controller.signal).then(move => {
         const currentFeatures = getSuperModeConfig().features || {};
-        const stillNeeded = currentFeatures.opponentBestMove || currentFeatures.evaluation || currentFeatures.mate || currentFeatures.moveQuality || currentFeatures.blunders || currentFeatures.evalDrop;
+        const stillNeeded = currentFeatures.opponentBestMove || currentFeatures.evaluation || currentFeatures.mate || currentFeatures.moveQuality || currentFeatures.blunders || currentFeatures.evalDrop || currentFeatures.ponderArrow || currentFeatures.pvLine || currentFeatures.depthConsensus || currentFeatures.winChance || currentFeatures.engineTelemetry || currentFeatures.evalGraph;
         if (!move || controller.signal.aborted || getFEN() !== fen || !stillNeeded) return;
         superModeOpponentBestMove = { fen, move, depth: engineAnalysisCache.get(fen)?.depth || depth };
         renderSuperModeBoard(fen);
@@ -1142,11 +1661,25 @@ function reviewSuperModeSession() {
     const scored = superModeSession.filter(x => Number.isFinite(x.evaluation));
     if (scored.length < 2) { superModeSessionReview = `${superModeSession.length} positions recorded, but at least two evaluations are needed for a review.`; renderSuperModeBoard(superModeCurrentFen); return; }
     let largest = { swing: 0, from: null, to: null };
+    let totalCpLoss = 0;
+    let transitions = 0;
+    let mistakes = 0;
+    let blunders = 0;
     for (let i = 1; i < scored.length; i++) {
         const swing = Math.abs(scored[i].evaluation - scored[i-1].evaluation);
         if (swing > largest.swing) largest = { swing, from: scored[i-1], to: scored[i] };
+        const prevTurn = (scored[i-1].fen.split(' ')[1] || 'w');
+        const moverLoss = prevTurn === 'w'
+            ? (scored[i-1].evaluation - scored[i].evaluation)
+            : (scored[i].evaluation - scored[i-1].evaluation);
+        const clampedLossCp = Math.max(0, Math.round(moverLoss * 100));
+        totalCpLoss += Math.min(1000, clampedLossCp);
+        transitions++;
+        if (moverLoss >= 1.5) blunders++;
+        else if (moverLoss >= 0.8) mistakes++;
     }
-    superModeSessionReview = `${scored.length} evaluated positions reviewed. Largest evaluation swing: ${largest.swing.toFixed(2)} (${fmtEval(largest.from.evaluation)} → ${fmtEval(largest.to.evaluation)}). This is a session summary, not a complete PGN-level game review.`;
+    const acpl = transitions ? Math.round(totalCpLoss / transitions) : 0;
+    superModeSessionReview = `${scored.length} pos · ACPL ${acpl} · ${blunders} blunders / ${mistakes} mistakes · Max swing ${largest.swing.toFixed(2)} (${fmtEval(largest.from.evaluation)} → ${fmtEval(largest.to.evaluation)})`;
     renderSuperModeBoard(superModeCurrentFen);
 }
 function refreshSuperMode() {
@@ -1163,8 +1696,12 @@ function refreshSuperMode() {
             const cached = engineAnalysisCache.get(fen);
             if (cached) handleSuperModeEngineAnalysis(fen, cached);
             const features = cfg.features || {};
-            const needsOpponentAnalysis = features.opponentBestMove || features.evaluation || features.mate || features.moveQuality || features.blunders || features.evalDrop;
+            const needsOpponentAnalysis = features.opponentBestMove || features.evaluation || features.mate || features.moveQuality || features.blunders || features.evalDrop || features.ponderArrow || features.pvLine || features.depthConsensus || features.winChance || features.engineTelemetry || features.evalGraph;
             if (needsOpponentAnalysis && (fen.split(' ')[1] || 'w') !== getMyColor() && window.chessHelper?.useEngine !== false) requestSuperModeOpponentBestMove(fen);
+            else if (needsOpponentAnalysis && (fen.split(' ')[1] || 'w') === getMyColor() && !cached && window.chessHelper?.useEngine !== false) {
+                lastProcessedFen = '';
+                scheduleTurnCheck();
+            }
         }
     }
     renderSuperModeBoard(superModeCurrentFen);
@@ -1203,6 +1740,7 @@ let lastProcessedFen = "";
 let activeAnalysisFen = "";
 let retryTimer = null;
 let analysisGeneration = 0;
+let autoPlayEpoch = 0;
 let checkmateShown = false;
 
 function checkForGameEnd() {
@@ -1278,6 +1816,7 @@ async function checkTurnAndPlay() {
     const fen = getFEN();
     if (!fen) return;
     updateSuperModeLocal(fen);
+    loadOtherGoodMoves(fen);
 
     // Always read the current FEN, even while older requests are still running.
     if (fen !== lastObservedFen) {
@@ -1296,7 +1835,7 @@ async function checkTurnAndPlay() {
         if (window.clearAllArrows) window.clearAllArrows();
         const turnCfg = window.chessHelper || {};
         const turnFeatures = turnCfg.superModeFeatures || {};
-        const needsOpponentAnalysis = turnFeatures.opponentBestMove || turnFeatures.evaluation || turnFeatures.mate || turnFeatures.moveQuality || turnFeatures.blunders || turnFeatures.evalDrop;
+        const needsOpponentAnalysis = turnFeatures.opponentBestMove || turnFeatures.evaluation || turnFeatures.mate || turnFeatures.moveQuality || turnFeatures.blunders || turnFeatures.evalDrop || turnFeatures.ponderArrow || turnFeatures.pvLine || turnFeatures.depthConsensus || turnFeatures.winChance || turnFeatures.engineTelemetry || turnFeatures.evalGraph;
         if (turnCfg.superModeEnabled && needsOpponentAnalysis && turnCfg.useEngine !== false) requestSuperModeOpponentBestMove(fen);
         return;
     }
@@ -1308,14 +1847,35 @@ async function checkTurnAndPlay() {
     const engineEnabled = cfg.useEngine !== false;
     const engineKeys = engineEnabled ? ['d5','d10','d15'].filter(key => arrows[key]?.show) : [];
     const superFeatures = cfg.superModeFeatures || {};
-    const superNeedsEngineEval = !!cfg.superModeEnabled && !!(superFeatures.evaluation || superFeatures.mate || superFeatures.moveQuality || superFeatures.blunders || superFeatures.evalDrop);
+    const superNeedsEngineEval = !!cfg.superModeEnabled && !!(
+        superFeatures.evaluation || superFeatures.mate || superFeatures.moveQuality ||
+        superFeatures.blunders || superFeatures.evalDrop || superFeatures.ponderArrow ||
+        superFeatures.pvLine || superFeatures.depthConsensus || superFeatures.winChance ||
+        superFeatures.engineTelemetry || superFeatures.evalGraph
+    );
     const addSuperEvalJob = engineEnabled && superNeedsEngineEval && engineKeys.length === 0;
     if (!engineKeys.length && !addSuperEvalJob) return;
 
     const controller = activeAnalysisController || (activeAnalysisController = new AbortController());
     const generation = ++analysisGeneration;
     activeAnalysisFen = fen;
-    const autoplayKey = cfg.autoPlay ? (cfg.autoplayArrow || 'd15') : null;
+    let autoplayKey = null;
+    if (cfg.autoPlay) {
+        const autoplaySource = cfg.autoplayArrow || 'd15';
+        if (autoplaySource === 'random-blue-teal') {
+            // Randomly choose from the Blue (D5) and Teal (D10) arrows that are enabled.
+            // If only one is enabled, use that one; if neither is enabled, do not auto-play.
+            const availableRandomSources = ['d5', 'd10'].filter(key => engineKeys.includes(key));
+            if (availableRandomSources.length) {
+                autoplayKey = availableRandomSources[randomIntInclusive(0, availableRandomSources.length - 1)];
+            }
+        } else if (['d5', 'd10', 'd15'].includes(autoplaySource)) {
+            autoplayKey = autoplaySource;
+        } else {
+            autoplayKey = 'd15';
+        }
+    }
+    const autoplayEpochAtStart = autoPlayEpoch;
     if (window.clearAllArrows) window.clearAllArrows();
     if (lastUsageRecordedFen !== fen) {
         lastUsageRecordedFen = fen;
@@ -1325,6 +1885,19 @@ async function checkTurnAndPlay() {
     // Launch each enabled source independently. A slow depth never blocks a newer FEN.
     const jobs = engineKeys.map(key => ({ key, run: () => fetchEngineBestMove(fen, arrows[key].depth, controller.signal) }));
     if (addSuperEvalJob) jobs.push({ key: 'superEval', run: () => fetchEngineBestMove(fen, arrows.d10?.depth || 10, controller.signal) });
+
+    // On MUJAHI API, if depthConsensus is enabled without a shallow depth arrow, request D5 in the same batched search at zero extra search cost
+    if (engineEnabled && cfg.superModeEnabled && superFeatures.depthConsensus && getEngineProvider() === 'mujahi') {
+        const hasShallow = jobs.some(j => j.key !== 'superEval' && Number(arrows[j.key]?.depth) <= 7);
+        const hasDeep = jobs.some(j => j.key === 'superEval' ? (arrows.d10?.depth || 10) >= 8 : Number(arrows[j.key]?.depth) >= 8);
+        if (!hasShallow && jobs.length) {
+            jobs.push({ key: 'superConsensus', run: () => fetchEngineBestMove(fen, 5, controller.signal) });
+        }
+        if (!hasDeep && jobs.length) {
+            jobs.push({ key: 'superConsensusDeep', run: () => fetchEngineBestMove(fen, arrows.d15?.depth || 15, controller.signal) });
+        }
+    }
+
     let remaining = jobs.length;
     let anyFailed = false;
     let autoPlayed = false;
@@ -1335,7 +1908,14 @@ async function checkTurnAndPlay() {
         if (generation !== analysisGeneration || controller.signal.aborted || document.hidden || getFEN() !== fen) return;
         activeAnalysisFen = '';
         if (!anyFailed) {
-            lastProcessedFen = fen;
+            // If auto-play was enabled/disabled while analysis was running, refresh this
+            // position once so the current auto-play preference is honoured.
+            if (window.chessHelper?.autoPlay && autoplayEpochAtStart !== autoPlayEpoch) {
+                lastProcessedFen = '';
+                scheduleTurnCheck();
+            } else {
+                lastProcessedFen = fen;
+            }
         } else if (getEngineProvider() === 'wasm' && localEngineFailure) {
             // A missing/broken local build is a persistent setup error, not a transient
             // network failure. Avoid retrying every 900 ms until the user changes mode.
@@ -1360,6 +1940,13 @@ async function checkTurnAndPlay() {
             if (window.drawArrow) window.drawArrow(job.key, move);
             if (autoplayKey === job.key && !autoPlayed && window.chessHelper?.autoPlay) {
                 autoPlayed = true;
+                const randomizer = window.chessHelper?.autoplayRandomizer || {};
+                const minDelay = Math.max(0, Math.min(10000, Number.isFinite(Number(randomizer.minMs)) ? Math.floor(Number(randomizer.minMs)) : 350));
+                const maxDelay = Math.max(minDelay, Math.min(10000, Number.isFinite(Number(randomizer.maxMs)) ? Math.floor(Number(randomizer.maxMs)) : 1400));
+                const delayMs = randomizer.enabled ? randomIntInclusive(minDelay, maxDelay) : 0;
+                const delayCompleted = await waitForAutoPlayDelay(delayMs, controller.signal);
+                const currentConfig = window.chessHelper || {};
+                if (!delayCompleted || generation !== analysisGeneration || controller.signal.aborted || document.hidden || getFEN() !== fen || !currentConfig.autoPlay || currentConfig.masterToggle === false || autoplayEpochAtStart !== autoPlayEpoch) return;
                 await makeMove(move);
             }
         }).catch(e => {
@@ -1375,6 +1962,9 @@ function onVisibilityChange() {
         if (turnCheckTimeout) { clearTimeout(turnCheckTimeout); turnCheckTimeout = null; }
         if (scheduledFrame) { cancelAnimationFrame(scheduledFrame); scheduledFrame = 0; }
         if (activeAnalysisController) activeAnalysisController.abort();
+        if (otherGoodMovesController) otherGoodMovesController.abort();
+        otherGoodMovesController = null;
+        otherGoodMovesRequestKey = '';
         mujahiProvider?.cancelAll();
         analysisGeneration++;
         activeAnalysisFen = '';
@@ -1390,6 +1980,12 @@ watchdogInterval = setInterval(() => { if (document.hidden) return; const board 
 
 window.chessHelperEngine = {
     triggerAutoPlay: () => { lastProcessedFen = ""; scheduleTurnCheck(); },
+    setAutoPlay: enabled => {
+        autoPlayEpoch++;
+        window.chessHelper.autoPlay = !!enabled;
+        if (!enabled && pendingAutoPlayDelayCancel) pendingAutoPlayDelayCancel();
+        if (enabled) { lastProcessedFen = ''; scheduleTurnCheck(); }
+    },
     updateMoveUI: updateMoveUI,
     getFEN: getFEN,
     fetchEngineBestMove: fetchEngineBestMove,
@@ -1399,7 +1995,7 @@ window.chessHelperEngine = {
     testMujahiHealth: testMujahiHealth,
     getMyColor: getMyColor,
     refreshSuperMode: refreshSuperMode,
+    refreshOtherGoodMoves: refreshOtherGoodMoves,
     reviewSuperModeSession: reviewSuperModeSession,
     getSuperModeSession: () => superModeSession.slice()
 };
-
