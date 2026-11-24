@@ -225,10 +225,15 @@ function initUI() {
             </div>
         </div>
 
-        <section id="ch-other-good-moves-card" class="ch-other-good-moves-card" style="display:none;">
-            <div class="ch-other-good-moves-head"><strong>Other good moves</strong><span style="display:inline-flex;align-items:center;gap:7px;"><span id="ch-other-good-moves-count-label">2 alternatives</span><button type="button" id="ch-other-good-moves-refresh" class="ch-other-good-moves-refresh" title="Refresh alternatives" aria-label="Refresh alternatives">↻</button></span></div>
-            <div id="ch-other-good-moves-list" class="ch-other-good-moves-list"><span class="ch-other-good-moves-status">Waiting for a position…</span></div>
-            <p id="ch-other-good-moves-note" class="ch-other-good-moves-note">Lichess cached analysis · separate from the selected engine depth</p>
+        <section id="ch-other-good-moves-card" class="ch-other-good-moves-card" style="display:none;" title="Lichess Cloud Eval cached alternatives">
+            <div class="ch-other-good-moves-head">
+                <strong>Alt moves</strong>
+                <span style="display:inline-flex;align-items:center;gap:6px;">
+                    <span id="ch-other-good-moves-count-label"></span>
+                    <button type="button" id="ch-other-good-moves-refresh" class="ch-other-good-moves-refresh" title="Refresh alternatives" aria-label="Refresh alternatives">↻</button>
+                </span>
+            </div>
+            <div id="ch-other-good-moves-list" class="ch-other-good-moves-list"><span class="ch-other-good-moves-status">Waiting…</span></div>
         </section>
 
         <div class="ch-row" style="margin-bottom: 12px;" id="ch-premium-block">

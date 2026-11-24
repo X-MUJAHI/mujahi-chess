@@ -211,9 +211,48 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-// One-shot JSON fallback & health probe
+const ALLOWED_AUX_HOSTS = new Set([
+  'lichess.org',
+  'explorer.lichess.org',
+  'tablebase.lichess.ovh',
+]);
+
+// One-shot JSON fallback, health probe & Lichess background fetch
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return false;
+
+  if (msg.type === 'FETCH_JSON') {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(String(msg.url || ''));
+    } catch {
+      sendResponse({ ok: false, status: 400, error: 'Invalid URL' });
+      return false;
+    }
+    if (parsedUrl.protocol !== 'https:' || !ALLOWED_AUX_HOSTS.has(parsedUrl.hostname)) {
+      sendResponse({ ok: false, status: 403, error: 'Host not permitted' });
+      return false;
+    }
+    fetch(parsedUrl.toString(), { headers: { Accept: 'application/json' } })
+      .then(async (res) => {
+        const retryAfter = res.headers.get('Retry-After') || '';
+        const data = await res.json().catch(() => null);
+        sendResponse({
+          ok: res.ok,
+          status: res.status,
+          retryAfter,
+          data,
+        });
+      })
+      .catch((err) => {
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: err?.message || 'Background network request failed',
+        });
+      });
+    return true;
+  }
 
   if (msg.type === 'MUJAHI_HEALTH') {
     const baseUrl = normalizeBaseUrl(msg.baseUrl);

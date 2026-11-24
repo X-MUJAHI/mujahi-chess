@@ -462,10 +462,23 @@ function fetchLocalWasmBestMove(fen, depth, signal, cacheKey) {
     });
 }
 
+const START_BOARD_PLACEMENT = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
 let activeAnalysisController = null;
 let cachedBoard = null;
 let lastFenWasNativeComplete = false;
-function clearFenCache() { fenCache.clear(); lichessFenCache.clear(); engineAnalysisCache.clear(); superModeAuxCache.clear(); superModeSnapshotsByFen.clear(); log("FEN cache cleared"); }
+let trackedCastling = null;
+let trackedCastlingBoard = null;
+function clearFenCache() {
+    fenCache.clear();
+    lichessFenCache.clear();
+    engineAnalysisCache.clear();
+    superModeAuxCache.clear();
+    superModeSnapshotsByFen.clear();
+    otherGoodMovesCache.clear();
+    trackedCastling = null;
+    trackedCastlingBoard = null;
+    log("FEN cache cleared");
+}
 
 // --- FREEMIUM ---
 function updateMoveUI() {
@@ -585,6 +598,49 @@ function getNativeFullFen(boardEl) {
     }
     return null;
 }
+function inferCastlingFromPlacement(placement) {
+    if (!placement) return '-';
+    const rows = placement.split('/');
+    if (rows.length !== 8) return '-';
+    const expandRow = (rowStr) => {
+        let out = '';
+        for (const ch of rowStr) {
+            if (/^[1-8]$/.test(ch)) out += '.'.repeat(Number(ch));
+            else out += ch;
+        }
+        return out;
+    };
+    const r8 = expandRow(rows[0]);
+    const r1 = expandRow(rows[7]);
+    if (r8.length !== 8 || r1.length !== 8) return '-';
+    let rights = '';
+    if (r1[4] === 'K') {
+        if (r1[7] === 'R') rights += 'K';
+        if (r1[0] === 'R') rights += 'Q';
+    }
+    if (r8[4] === 'k') {
+        if (r8[7] === 'r') rights += 'k';
+        if (r8[0] === 'r') rights += 'q';
+    }
+    return rights || '-';
+}
+function getCloudLookupFens(fen) {
+    if (!fen) return [];
+    const fields = fen.trim().split(/\s+/);
+    if (fields.length < 4) return [fen];
+    const rest = [fields[3] || '-', fields[4] || '0', fields[5] || '1'];
+    if (fields[2] === '-') {
+        const inferred = inferCastlingFromPlacement(fields[0]);
+        if (inferred !== '-') {
+            return [[fields[0], fields[1], inferred, ...rest].join(' '), fen];
+        }
+        return [fen];
+    }
+    if (!lastFenWasNativeComplete) {
+        return [fen, [fields[0], fields[1], '-', ...rest].join(' ')];
+    }
+    return [fen];
+}
 function getFEN() {
     const boardEl = getBoard();
     if (!boardEl) return null;
@@ -616,13 +672,33 @@ function getFEN() {
         if (empty) row+=empty;
         rows.push(row);
     }
-    // Chess.com piece DOM does not expose castling/en-passant state in this fallback.
-    return rows.join('/') + ` ${getActiveColor(boardEl)} - - 0 1`;
+    const placement = rows.join('/');
+    if (trackedCastlingBoard !== boardEl) {
+        trackedCastlingBoard = boardEl;
+        trackedCastling = null;
+    }
+    if (placement === START_BOARD_PLACEMENT) {
+        trackedCastling = { K: true, Q: true, k: true, q: true };
+    } else if (trackedCastling) {
+        if (board[60] !== 'K') { trackedCastling.K = false; trackedCastling.Q = false; }
+        if (board[63] !== 'R') trackedCastling.K = false;
+        if (board[56] !== 'R') trackedCastling.Q = false;
+        if (board[4] !== 'k')  { trackedCastling.k = false; trackedCastling.q = false; }
+        if (board[7] !== 'r')  trackedCastling.k = false;
+        if (board[0] !== 'r')  trackedCastling.q = false;
+    }
+    let castlingStr = '-';
+    if (trackedCastling) {
+        const built = `${trackedCastling.K ? 'K' : ''}${trackedCastling.Q ? 'Q' : ''}${trackedCastling.k ? 'k' : ''}${trackedCastling.q ? 'q' : ''}`;
+        castlingStr = built || '-';
+    }
+    return `${placement} ${getActiveColor(boardEl)} ${castlingStr} - 0 1`;
 }
 
 // --- API CALLS ---
 const MAX_API_RETRIES = 2; // retries after the first attempt
 const RETRY_BASE_MS = 500;
+const BG_AUX_FETCH_HOSTS = new Set(['lichess.org', 'explorer.lichess.org', 'tablebase.lichess.ovh']);
 function retryDelay(response, attempt) {
     const retryAfter = response?.headers?.get?.('Retry-After');
     if (retryAfter) {
@@ -640,11 +716,71 @@ function reportHttpError(service, status) {
     else if (status >= 500) log(`${service}: HTTP ${status} server error; retrying`);
     else log(`${service}: HTTP ${status}`);
 }
+function isBgAuxHostUrl(url) {
+    try {
+        const u = new URL(String(url));
+        return u.protocol === 'https:' && BG_AUX_FETCH_HOSTS.has(u.hostname);
+    } catch (_) {
+        return false;
+    }
+}
+function fetchJsonViaBackground(url, signal = null) {
+    if (signal?.aborted) {
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        return Promise.reject(err);
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const onAbort = () => {
+                if (settled) return;
+                settled = true;
+                const err = new Error('Aborted');
+                err.name = 'AbortError';
+                reject(err);
+            };
+            if (signal) signal.addEventListener('abort', onAbort, { once: true });
+            try {
+                chrome.runtime.sendMessage({ type: 'FETCH_JSON', url }, (res) => {
+                    if (signal) signal.removeEventListener('abort', onAbort);
+                    if (settled || signal?.aborted) return;
+                    settled = true;
+                    const lastErr = chrome.runtime.lastError;
+                    if (lastErr) {
+                        reject(new Error(lastErr.message));
+                        return;
+                    }
+                    if (!res) {
+                        reject(new Error('No response from extension service worker'));
+                        return;
+                    }
+                    resolve({
+                        ok: Boolean(res.ok),
+                        status: Number(res.status) || 0,
+                        data: res.data ?? null,
+                        error: res.error || '',
+                        headers: { get: (name) => (String(name).toLowerCase() === 'retry-after' ? (res.retryAfter || null) : null) },
+                        async json() { return res.data ?? null; }
+                    });
+                });
+            } catch (err) {
+                if (signal) signal.removeEventListener('abort', onAbort);
+                if (!settled) {
+                    settled = true;
+                    reject(err);
+                }
+            }
+        });
+    }
+    return fetch(url, { signal, headers: { Accept: 'application/json' } });
+}
 async function fetchJsonWithRetry(url, options, service) {
+    const useBg = isBgAuxHostUrl(url) && typeof chrome !== 'undefined' && typeof chrome.runtime?.sendMessage === 'function';
     for (let attempt = 0; attempt <= MAX_API_RETRIES; attempt++) {
         if (options?.signal?.aborted) return null;
         try {
-            const res = await fetch(url, options);
+            const res = useBg ? await fetchJsonViaBackground(url, options?.signal) : await fetch(url, options);
             if (res.ok) return await res.json();
             reportHttpError(service, res.status);
             // Authentication/permission and other client errors won't improve by retrying.
@@ -667,11 +803,10 @@ function renderOtherGoodMovesState({ status = '', data = null, count = 2, fenCom
     const list = document.getElementById('ch-other-good-moves-list');
     const note = document.getElementById('ch-other-good-moves-note');
     const countLabel = document.getElementById('ch-other-good-moves-count-label');
-    if (!card || !list || !note) return;
+    if (!card || !list) return;
     const cfg = window.chessHelper?.otherGoodMoves || {};
     if (!cfg.enabled) { card.style.display = 'none'; return; }
     card.style.display = 'block';
-    if (countLabel) countLabel.textContent = `${count} alternative${count === 1 ? '' : 's'}`;
     list.replaceChildren();
 
     const addStatus = message => {
@@ -680,12 +815,22 @@ function renderOtherGoodMovesState({ status = '', data = null, count = 2, fenCom
         item.textContent = message;
         list.appendChild(item);
     };
-    if (status) { addStatus(status); note.textContent = fenComplete ? 'Lichess Cloud Eval · Cached position analysis' : 'Simplified board FEN · castling/en-passant rights may be missing.'; return; }
+    if (status) {
+        if (countLabel) countLabel.textContent = `max ${count}`;
+        card.title = fenComplete ? 'Lichess Cloud Eval cached alternatives' : 'Lichess Cloud Eval cached alternatives (DOM FEN)';
+        addStatus(status);
+        if (note) note.textContent = status;
+        return;
+    }
 
     const pvs = Array.isArray(data?.pvs) ? data.pvs.slice(1, count + 1) : [];
+    const depth = Number(data?.depth) || 0;
+    if (countLabel) countLabel.textContent = depth ? `D${depth}` : `max ${count}`;
+    card.title = `Lichess Cloud Eval · Depth ${depth || '—'} · Cached MultiPV alternatives`;
+
     if (!pvs.length) {
-        addStatus('No cached alternative lines are available for this position.');
-        note.textContent = lastFenWasNativeComplete ? 'Lichess Cloud Eval · Only positions already in its cache are available.' : 'Simplified board FEN · castling/en-passant rights may be missing, so results may not match this exact position.';
+        addStatus('No cached lines');
+        if (note) note.textContent = 'No cached lines';
         return;
     }
 
@@ -696,25 +841,22 @@ function renderOtherGoodMovesState({ status = '', data = null, count = 2, fenCom
         const row = document.createElement('div');
         row.className = 'ch-other-good-move-row';
         const move = document.createElement('strong');
-        move.textContent = `${match[1]} → ${match[2]}${match[3] ? `=${match[3].toUpperCase()}` : ''}`;
+        move.textContent = `${match[1]}→${match[2]}${match[3] ? `=${match[3].toUpperCase()}` : ''}`;
         const score = document.createElement('span');
         if (pv.cp !== undefined && pv.cp !== null && Number.isFinite(Number(pv.cp))) {
             const cp = Number(pv.cp) / 100;
-            score.textContent = `White ${cp > 0 ? '+' : ''}${cp.toFixed(2)}`;
+            score.textContent = `${cp > 0 ? '+' : ''}${cp.toFixed(2)}`;
         } else if (pv.mate !== undefined && pv.mate !== null && Number.isFinite(Number(pv.mate))) {
             const mate = Number(pv.mate);
-            score.textContent = `White M${mate > 0 ? '+' : ''}${mate}`;
+            score.textContent = `M${mate > 0 ? '+' : ''}${mate}`;
         } else {
-            score.textContent = `Alternative ${index + 1}`;
+            score.textContent = `#${index + 2}`;
         }
         row.append(move, score);
         list.appendChild(row);
     });
-    if (!list.childElementCount) addStatus('No readable alternative moves were returned.');
-    const depth = Number(data.depth) || 0;
-    note.textContent = lastFenWasNativeComplete
-        ? `Lichess Cloud Eval · Depth ${depth || '—'} · Cached analysis, independent of selected engine depth`
-        : `Lichess Cloud Eval · Depth ${depth || '—'} · FEN rights may be incomplete; verify the position before relying on these moves`;
+    if (!list.childElementCount) addStatus('No readable lines');
+    if (note) note.textContent = `Lichess Cloud Eval · Depth ${depth || '—'}`;
 }
 
 async function loadOtherGoodMoves(fen) {
@@ -742,34 +884,56 @@ async function loadOtherGoodMoves(fen) {
     }
 
     if (Date.now() < otherGoodMovesRetryAfter) {
-        renderOtherGoodMovesState({ status: 'Lichess temporarily rate-limited requests. Try again after about one minute.', count, fenComplete });
+        renderOtherGoodMovesState({ status: 'Rate limited (wait 1m)', count, fenComplete });
         return;
     }
     const controller = new AbortController();
     otherGoodMovesController = controller;
-    renderOtherGoodMovesState({ status: 'Loading alternative moves…', count, fenComplete });
-    const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=${count + 1}`;
+    renderOtherGoodMovesState({ status: 'Loading…', count, fenComplete });
+
+    const candidateFens = getCloudLookupFens(fen);
     try {
-        // Lichess recommends a single outstanding API request and a full-minute pause after HTTP 429.
-        const response = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
-        if (response.status === 429) {
-            otherGoodMovesRetryAfter = Date.now() + 60000;
-            throw new Error('Lichess rate limit reached. Wait about one minute before requesting alternatives again.');
+        let matchedResult = null;
+        let lastStatus = 0;
+        let sawFailure = false;
+
+        for (const candidateFen of candidateFens) {
+            if (controller.signal.aborted) return;
+            const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(candidateFen)}&multiPv=${count + 1}`;
+            const response = await fetchJsonViaBackground(url, controller.signal);
+            if (controller.signal.aborted || otherGoodMovesCurrentFen !== fen || otherGoodMovesRequestKey !== requestKey) return;
+            lastStatus = Number(response?.status) || 0;
+            if (lastStatus === 429) {
+                otherGoodMovesRetryAfter = Date.now() + 60000;
+                throw new Error('Rate limited (wait 1m)');
+            }
+            const data = response.ok ? (response.data ?? await response.json()) : null;
+            if (data && Array.isArray(data.pvs)) {
+                matchedResult = data;
+                break;
+            }
+            if (lastStatus !== 404) {
+                sawFailure = true;
+                break;
+            }
         }
-        const data = response.ok ? await response.json() : null;
+
         if (controller.signal.aborted || otherGoodMovesCurrentFen !== fen || otherGoodMovesRequestKey !== requestKey) return;
-        const result = data && Array.isArray(data.pvs) ? data : null;
-        otherGoodMovesCache.set(requestKey, result || { pvs: [], depth: 0 });
-        if (otherGoodMovesCache.size > 180) otherGoodMovesCache.delete(otherGoodMovesCache.keys().next().value);
-        if (result) {
-            renderOtherGoodMovesState({ data: result, count, fenComplete });
+        if (matchedResult) {
+            otherGoodMovesCache.set(requestKey, matchedResult);
+            if (otherGoodMovesCache.size > 180) otherGoodMovesCache.delete(otherGoodMovesCache.keys().next().value);
+            renderOtherGoodMovesState({ data: matchedResult, count, fenComplete });
+        } else if (lastStatus === 404 && !sawFailure) {
+            otherGoodMovesCache.set(requestKey, { pvs: [], depth: 0 });
+            if (otherGoodMovesCache.size > 180) otherGoodMovesCache.delete(otherGoodMovesCache.keys().next().value);
+            renderOtherGoodMovesState({ status: 'No cached lines', count, fenComplete });
         } else {
-            renderOtherGoodMovesState({ status: response.status === 404 ? 'No cached alternatives are available for this position.' : `Lichess Cloud Eval returned HTTP ${response.status}.`, count, fenComplete });
+            renderOtherGoodMovesState({ status: lastStatus ? `Unavailable (HTTP ${lastStatus})` : 'Unavailable (retry ↻)', count, fenComplete });
         }
     } catch (error) {
         if (error?.name === 'AbortError' || controller.signal.aborted) return;
         if (otherGoodMovesCurrentFen === fen && otherGoodMovesRequestKey === requestKey) {
-            renderOtherGoodMovesState({ status: error?.message || 'Could not load alternative moves. Check your connection and try again.', count, fenComplete });
+            renderOtherGoodMovesState({ status: error?.message === 'Rate limited (wait 1m)' ? error.message : 'Unavailable (retry ↻)', count, fenComplete });
         }
     } finally {
         if (otherGoodMovesController === controller) otherGoodMovesController = null;
@@ -1629,15 +1793,16 @@ async function loadSuperModeApis(fen) {
     renderSuperModeBoard(fen);
     const current = () => !signal.aborted && getFEN() === fen && getSuperModeConfig().enabled;
     const tasks = [];
+    const lookupFen = getCloudLookupFens(fen)[0] || fen;
     if (f.openingExplorer && !superModeAuxCache.has(`openingExplorer|${fen}`)) tasks.push((async () => {
-        const url = `https://explorer.lichess.org/lichess?fen=${encodeURIComponent(fen)}&moves=5&topGames=0&recentGames=0`;
+        const url = `https://explorer.lichess.org/lichess?fen=${encodeURIComponent(lookupFen)}&moves=5&topGames=0&recentGames=0`;
         const data = await fetchJsonWithRetry(url, { signal, headers: { 'Accept':'application/json' } }, 'SuperMode Opening Explorer');
         if (!current()) return;
         const value = data && data !== false ? data : { message: data === false ? 'API access denied or unavailable.' : 'No opening data found for this position.' };
         setBoundedCache(superModeAuxCache, `openingExplorer|${fen}`, value, 300); superModeApiData.opening = value; renderSuperModeBoard(fen);
     })());
     if (f.alternatives && !superModeAuxCache.has(`alternatives|${fen}`)) tasks.push((async () => {
-        const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=3`;
+        const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(lookupFen)}&multiPv=3`;
         const data = await fetchJsonWithRetry(url, { signal, headers: { 'Accept':'application/json' } }, 'SuperMode Alternative Lines');
         if (!current()) return;
         const value = data && data !== false && Array.isArray(data.pvs) ? data : { message: data === false ? 'Cloud evaluation unavailable or not cached.' : 'No cached alternative lines for this position.' };
