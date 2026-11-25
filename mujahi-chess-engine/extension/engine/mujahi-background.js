@@ -207,7 +207,19 @@ function ensureLocalStockfishOffscreen() {
     }
     if (offscreenHostPort) return true;
 
-    const exists = await hasExistingOffscreenHost();
+    let exists = await hasExistingOffscreenHost();
+    if (exists && !offscreenHostPort) {
+      // Allow a brief grace window in case host.js is mid-startup; otherwise close & recreate stale document.
+      await new Promise((r) => setTimeout(r, 250));
+      if (offscreenHostPort) return true;
+      if (chrome.offscreen?.closeDocument) {
+        offscreenClosingIntentionally = true;
+        try { await chrome.offscreen.closeDocument(); } catch (_) {}
+        offscreenClosingIntentionally = false;
+      }
+      exists = await hasExistingOffscreenHost();
+    }
+
     if (!exists) {
       offscreenHostReady = false;
       offscreenHostError = '';

@@ -70,6 +70,7 @@ let localEngineHostPromise = null;
 let localEngineHostResolve = null;
 let localEngineHostReject = null;
 let localEngineHostTimer = null;
+let localEnginePortTimer = null;
 let localEngineHostReady = false;
 let localEngineUciPromise = null;
 let localEngineFailure = null;
@@ -211,6 +212,7 @@ function failLocalEngine(error) {
         localEngineFailure = incoming;
     }
     if (localEngineHostTimer) { clearTimeout(localEngineHostTimer); localEngineHostTimer = null; }
+    if (localEnginePortTimer) { clearTimeout(localEnginePortTimer); localEnginePortTimer = null; }
     if (localEngineHostReject) {
         const reject = localEngineHostReject;
         localEngineHostResolve = localEngineHostReject = null;
@@ -225,6 +227,10 @@ function failLocalEngine(error) {
     }
 }
 function startIframeLocalEngineHost() {
+    if (localEnginePortTimer) {
+        clearTimeout(localEnginePortTimer);
+        localEnginePortTimer = null;
+    }
     if (localEnginePort) {
         try { localEnginePort.disconnect(); } catch (_) {}
         localEnginePort = null;
@@ -249,6 +255,7 @@ function processLocalEngineHostPayload(data) {
     if (data.type === 'ready') {
         localEngineHostReady = true;
         localEngineFailure = null;
+        if (localEnginePortTimer) { clearTimeout(localEnginePortTimer); localEnginePortTimer = null; }
         if (localEngineHostTimer) { clearTimeout(localEngineHostTimer); localEngineHostTimer = null; }
         if (localEngineHostResolve) {
             const resolve = localEngineHostResolve;
@@ -296,6 +303,16 @@ function ensureLocalEngineHost() {
             try {
                 const port = chrome.runtime.connect({ name: 'local-stockfish-client' });
                 localEnginePort = port;
+                if (localEnginePortTimer) clearTimeout(localEnginePortTimer);
+                // If an offscreen document was suspended by mobile/idle policies and doesn't answer within 2.5s,
+                // fall back immediately to the inline extension iframe instead of hanging for 20s.
+                localEnginePortTimer = setTimeout(() => {
+                    localEnginePortTimer = null;
+                    if (!localEngineHostReady && localEnginePort === port && !localEngineFrame) {
+                        log('Offscreen Stockfish host timed out; falling back to extension iframe');
+                        startIframeLocalEngineHost();
+                    }
+                }, 2500);
                 port.onMessage.addListener((msg) => {
                     if (localEnginePort !== port) return;
                     processLocalEngineHostPayload(msg);
@@ -303,6 +320,7 @@ function ensureLocalEngineHost() {
                 port.onDisconnect.addListener(() => {
                     if (localEnginePort !== port) return;
                     localEnginePort = null;
+                    if (localEnginePortTimer) { clearTimeout(localEnginePortTimer); localEnginePortTimer = null; }
                     const errMsg = chrome.runtime.lastError?.message || '';
                     if (!localEngineHostReady && !localEngineFrame) {
                         if (/context invalidated/i.test(errMsg)) {
@@ -1122,7 +1140,7 @@ function renderSoftMistakesState(state = softMistakesLastState) {
         btn.className = `ch-soft-mistake-chip${softMistakesSelectedMove === cand.move ? ' is-active' : ''}`;
         const dropPawns = Number.isFinite(Number(cand.dropPawns)) ? Number(cand.dropPawns) : (Number(cand.dropCp || 0) / 100);
         const evalPawns = Number.isFinite(Number(cand.evalPawns)) ? Number(cand.evalPawns) : (Number(cand.evalCp || 0) / 100);
-        btn.title = `${fmtMoveArrow(cand.move)}: drops ${dropPawns.toFixed(2)} pawns · new eval ${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)} (click to show arrow)`;
+        btn.title = `${fmtMoveArrow(cand.move)}: drops ${dropPawns.toFixed(2)} pawns · new eval ${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)} (click to play move)`;
 
         const moveEl = document.createElement('strong');
         moveEl.textContent = fmtMoveArrow(cand.move);
@@ -1134,15 +1152,37 @@ function renderSoftMistakesState(state = softMistakesLastState) {
         evalEl.textContent = `${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)}`;
 
         btn.append(moveEl, dropEl, evalEl);
-        btn.addEventListener('click', () => {
+        btn.addEventListener('mouseenter', () => {
+            softMistakesSelectedMove = cand.move;
+            window.drawArrow?.('softMistake', cand.move);
+        });
+        btn.addEventListener('mouseleave', () => {
             if (softMistakesSelectedMove === cand.move) {
                 softMistakesSelectedMove = '';
                 window.clearArrow?.('softMistake');
-            } else {
-                softMistakesSelectedMove = cand.move;
-                window.drawArrow?.('softMistake', cand.move);
             }
-            renderSoftMistakesState(softMistakesLastState);
+        });
+        btn.addEventListener('click', async () => {
+            const liveFen = getFEN();
+            const scannedFen = state.fen || softMistakesCurrentFen;
+            if (!liveFen || (scannedFen && liveFen !== scannedFen)) {
+                renderSoftMistakesState({ fen: liveFen || '', status: 'Board changed — click Find again', candidates: [], sourceLabel: '' });
+                return;
+            }
+            if ((liveFen.split(' ')[1] || 'w') !== getMyColor()) {
+                window.showCustomModal?.('Wait for your turn', 'You can only play a soft-mistake move on your turn.');
+                return;
+            }
+            softMistakesSelectedMove = '';
+            window.clearArrow?.('softMistake');
+            for (const chip of list.querySelectorAll('.ch-soft-mistake-chip')) chip.disabled = true;
+            try {
+                await makeMove(cand.move);
+            } finally {
+                if (getFEN() === liveFen) {
+                    for (const chip of list.querySelectorAll('.ch-soft-mistake-chip')) chip.disabled = false;
+                }
+            }
         });
         list.appendChild(btn);
     }
@@ -1440,6 +1480,7 @@ function resetLocalEngineRuntime({ terminate = true, error = localEngineAbortErr
         try { localEnginePost({ type: 'terminate' }); } catch (_) {}
     }
     if (localEngineHostTimer) { clearTimeout(localEngineHostTimer); localEngineHostTimer = null; }
+    if (localEnginePortTimer) { clearTimeout(localEnginePortTimer); localEnginePortTimer = null; }
     if (localEngineHostReject) {
         const reject = localEngineHostReject;
         localEngineHostResolve = localEngineHostReject = null;
