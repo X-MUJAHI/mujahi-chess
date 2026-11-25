@@ -16,9 +16,13 @@ function readAutoplayDelay(key, fallback) {
 const _savedAutoplayRandomizerEnabled = localStorage.getItem('ch_autoplay_randomizer_enabled') === 'true';
 const _savedAutoplayDelayMin = readAutoplayDelay('ch_autoplay_delay_min', 350);
 const _savedAutoplayDelayMax = Math.max(_savedAutoplayDelayMin, readAutoplayDelay('ch_autoplay_delay_max', 1400));
-const _savedOtherGoodMovesEnabled = localStorage.getItem('ch_other_good_moves_enabled') === 'true';
-const _savedOtherGoodMovesCountRaw = Number.parseInt(localStorage.getItem('ch_other_good_moves_count') || '2', 10);
-const _savedOtherGoodMovesCount = Number.isFinite(_savedOtherGoodMovesCountRaw) ? Math.max(1, Math.min(4, _savedOtherGoodMovesCountRaw)) : 2;
+function readIntRange(key, fallback, min, max) {
+    const parsed = Number.parseInt(localStorage.getItem(key) || '', 10);
+    return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+const _savedSoftMistakesMinCp = readIntRange('ch_soft_mistakes_min_cp', 25, 10, 300);
+const _savedSoftMistakesMaxCp = Math.max(_savedSoftMistakesMinCp, readIntRange('ch_soft_mistakes_max_cp', 85, 20, 400));
+const _savedSoftMistakesCount = readIntRange('ch_soft_mistakes_count', 3, 1, 4);
 function normalizeEngineProvider(provider) {
     if (provider === 'wasm') return 'wasm';
     if (provider === 'mujahi') return 'mujahi';
@@ -41,6 +45,7 @@ const SUPER_MODE_FEATURES = [
     { key: 'moveQuality', label: 'Last-move quality', group: 'Engine insights' },
     { key: 'blunders', label: 'Blunder move alerts', group: 'Engine insights' },
     { key: 'evalDrop', label: 'Small evaluation-drop alerts', group: 'Engine insights' },
+    { key: 'softMistakes', label: 'Soft mistake finder', group: 'Engine insights' },
     { key: 'opponentBestMove', label: 'Opponent best move', group: 'Engine insights' },
     { key: 'engineTelemetry', label: 'Engine telemetry (NPS)', group: 'Position lookups' },
     { key: 'evalGraph', label: 'Eval sparkline', group: 'Position lookups' },
@@ -80,9 +85,10 @@ window.chessHelper = {
         minMs: _savedAutoplayDelayMin,
         maxMs: _savedAutoplayDelayMax
     },
-    otherGoodMoves: {
-        enabled: _savedOtherGoodMovesEnabled,
-        count: _savedOtherGoodMovesCount
+    softMistakes: {
+        minDropCp: _savedSoftMistakesMinCp,
+        maxDropCp: _savedSoftMistakesMaxCp,
+        maxResults: _savedSoftMistakesCount
     },
     arrows: {
         d15: { depth: _savedD15, show: _savedShowD15, color: '#4ade80' },
@@ -225,15 +231,12 @@ function initUI() {
             </div>
         </div>
 
-        <section id="ch-other-good-moves-card" class="ch-other-good-moves-card" style="display:none;" title="Lichess Cloud Eval cached alternatives">
-            <div class="ch-other-good-moves-head">
-                <strong>Alt moves</strong>
-                <span style="display:inline-flex;align-items:center;gap:6px;">
-                    <span id="ch-other-good-moves-count-label"></span>
-                    <button type="button" id="ch-other-good-moves-refresh" class="ch-other-good-moves-refresh" title="Refresh alternatives" aria-label="Refresh alternatives">↻</button>
-                </span>
+        <section id="ch-soft-mistakes-card" class="ch-soft-mistakes-card" style="display:none;" title="On-demand slight inaccuracy finder">
+            <div class="ch-soft-mistakes-head">
+                <strong>Soft mistakes <span id="ch-soft-mistakes-range-label"></span></strong>
+                <button type="button" id="ch-btn-find-soft-mistakes" class="ch-soft-mistakes-find-btn" title="Scan on-demand for mild mistakes causing a small evaluation-bar drop">Find</button>
             </div>
-            <div id="ch-other-good-moves-list" class="ch-other-good-moves-list"><span class="ch-other-good-moves-status">Waiting…</span></div>
+            <div id="ch-soft-mistakes-list" class="ch-soft-mistakes-list"><span class="ch-soft-mistakes-status">Click Find when you want mild mistakes</span></div>
         </section>
 
         <div class="ch-row" style="margin-bottom: 12px;" id="ch-premium-block">
@@ -337,6 +340,28 @@ function initUI() {
                     <span><strong>Compact HUD pills</strong><small>Smaller text and padding to keep board squares clear</small></span>
                 </label>
             </section>
+            <section class="ch-super-settings-group ch-super-options-group ch-soft-mistakes-settings-group">
+                <div class="ch-super-settings-group-title">Soft mistake finder (on-demand)</div>
+                <div class="ch-soft-mistakes-settings-options" id="ch-soft-mistakes-settings-options" data-disabled="${window.chessHelper.superModeFeatures.softMistakes ? 'false' : 'true'}">
+                    <div class="ch-autoplay-delay-fields" style="margin-top:0; margin-bottom:6px;">
+                        <label class="ch-autoplay-delay-field" for="ch-soft-mistakes-min-drop">
+                            <span>Min eval drop</span>
+                            <span class="ch-autoplay-delay-input-wrap"><input type="number" id="ch-soft-mistakes-min-drop" min="0.10" max="3.00" step="0.05" value="${(_savedSoftMistakesMinCp / 100).toFixed(2)}"><small>pwns</small></span>
+                        </label>
+                        <label class="ch-autoplay-delay-field" for="ch-soft-mistakes-max-drop">
+                            <span>Max eval drop</span>
+                            <span class="ch-autoplay-delay-input-wrap"><input type="number" id="ch-soft-mistakes-max-drop" min="0.20" max="4.00" step="0.05" value="${(_savedSoftMistakesMaxCp / 100).toFixed(2)}"><small>pwns</small></span>
+                        </label>
+                    </div>
+                    <label class="ch-autoplay-source-field" for="ch-soft-mistakes-count">
+                        <span>Max moves listed</span>
+                        <select id="ch-soft-mistakes-count" class="ch-autoplay-source-select">
+                            ${[1,2,3,4].map(n => `<option value="${n}" ${_savedSoftMistakesCount === n ? 'selected' : ''}>${n}</option>`).join('')}
+                        </select>
+                    </label>
+                </div>
+                <p class="ch-autoplay-delay-note" id="ch-soft-mistakes-settings-note">Enable "Soft mistake finder" above, then click Find on the main panel whenever you want mild mistakes.</p>
+            </section>
             <div class="ch-super-settings-actions">
                 <button type="button" class="ch-btn ch-btn-secondary" id="ch-supermode-review">Review this session</button>
                 <button type="button" class="ch-btn ch-btn-secondary" id="ch-supermode-clear" title="Turn off all SuperMode overlays">Clear all</button>
@@ -372,22 +397,6 @@ function initUI() {
                 <button type="button" id="ch-btn-test-mujahi" class="ch-btn ch-btn-secondary" style="flex:0 0 auto; padding:5px 10px; font-size:10px; border-radius:8px;">Test MUJAHI</button>
             </div>
             <p class="ch-engine-provider-note">Switch anytime between Hosted API, MUJAHI API (progressive D5/D10/D15 SSE stream), or Local WASM (requires the two Stockfish files in <code>engine/</code>).</p>
-            <section class="ch-super-settings-group ch-other-good-moves-settings">
-                <div class="ch-super-settings-group-title">Other good moves</div>
-                <label class="ch-autoplay-randomizer-toggle" for="ch-other-good-moves-enabled">
-                    <input type="checkbox" id="ch-other-good-moves-enabled" ${_savedOtherGoodMovesEnabled ? 'checked' : ''}>
-                    <span><strong>Show alternative moves</strong><small>Display strong alternatives below the arrows</small></span>
-                </label>
-                <div class="ch-other-good-moves-options" id="ch-other-good-moves-options" ${_savedOtherGoodMovesEnabled ? '' : 'data-disabled="true"'}>
-                    <label class="ch-autoplay-source-field" for="ch-other-good-moves-count">
-                        <span>Number of alternatives</span>
-                        <select id="ch-other-good-moves-count" class="ch-autoplay-source-select">
-                            ${[1,2,3,4].map(n => `<option value="${n}" ${_savedOtherGoodMovesCount === n ? 'selected' : ''}>${n}</option>`).join('')}
-                        </select>
-                    </label>
-                </div>
-                <p class="ch-autoplay-delay-note">Uses Lichess Cloud Eval MultiPV, not the selected Stockfish provider. It can only return positions already in Lichess’s cache, and its depth may differ from your selected depth.</p>
-            </section>
             <section class="ch-super-settings-group ch-autoplay-source-group">
                 <div class="ch-super-settings-group-title">Auto-play move source</div>
                 <label class="ch-autoplay-source-field" for="ch-autoplay-arrow">
@@ -436,7 +445,7 @@ function initUI() {
     setupButtonEvents();
 
     if (window.chessHelperEngine?.updateMoveUI) window.chessHelperEngine.updateMoveUI();
-    if (window.chessHelperEngine?.refreshOtherGoodMoves) window.chessHelperEngine.refreshOtherGoodMoves();
+    if (window.chessHelperEngine?.refreshSoftMistakesCard) window.chessHelperEngine.refreshSoftMistakesCard();
 }
 
 // --- DRAG LOGIC ---
@@ -556,26 +565,12 @@ function setupButtonEvents() {
     randomizerMin.addEventListener('change', saveAutoplayRandomizer, { signal });
     randomizerMax.addEventListener('change', saveAutoplayRandomizer, { signal });
 
-    const otherMovesToggle = document.getElementById('ch-other-good-moves-enabled');
-    const otherMovesOptions = document.getElementById('ch-other-good-moves-options');
-    const otherMovesCount = document.getElementById('ch-other-good-moves-count');
-    const saveOtherGoodMoves = () => {
-        const enabled = otherMovesToggle.checked;
-        const count = Math.max(1, Math.min(4, Number.parseInt(otherMovesCount.value, 10) || 2));
-        otherMovesCount.value = String(count);
-        window.chessHelper.otherGoodMoves = { enabled, count };
-        localStorage.setItem('ch_other_good_moves_enabled', String(enabled));
-        localStorage.setItem('ch_other_good_moves_count', String(count));
-        otherMovesOptions.dataset.disabled = String(!enabled);
-        const card = document.getElementById('ch-other-good-moves-card');
-        if (!enabled && card) card.style.display = 'none';
-        if (window.chessHelperEngine?.refreshOtherGoodMoves) window.chessHelperEngine.refreshOtherGoodMoves();
-    };
-    otherMovesToggle.addEventListener('change', saveOtherGoodMoves, { signal });
-    otherMovesCount.addEventListener('change', saveOtherGoodMoves, { signal });
-    document.getElementById('ch-other-good-moves-refresh').addEventListener('click', () => {
-        if (window.chessHelperEngine?.refreshOtherGoodMoves) window.chessHelperEngine.refreshOtherGoodMoves();
-    }, { signal });
+    const softMistakesFindBtn = document.getElementById('ch-btn-find-soft-mistakes');
+    if (softMistakesFindBtn) {
+        softMistakesFindBtn.addEventListener('click', () => {
+            if (window.chessHelperEngine?.findSoftMistakes) window.chessHelperEngine.findSoftMistakes();
+        }, { signal });
+    }
 
     engineSettingsOverlay.querySelectorAll('input[name="ch-engine-provider"]').forEach(input => {
         input.addEventListener('change', (e) => {
@@ -603,6 +598,7 @@ function setupButtonEvents() {
             window.clearAllArrows();
             if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
         } else if (window.chessHelperEngine?.triggerAutoPlay) window.chessHelperEngine.triggerAutoPlay();
+        if (window.chessHelperEngine?.refreshSoftMistakesCard) window.chessHelperEngine.refreshSoftMistakesCard();
     }, { signal });
 
     document.getElementById('ch-toggle-autoplay').addEventListener('change', (e) => {
@@ -627,7 +623,9 @@ function setupButtonEvents() {
         window.chessHelper.superModeEnabled = e.target.checked;
         localStorage.setItem('ch_supermode_enabled', String(e.target.checked));
         superModeControls.style.display = e.target.checked ? 'block' : 'none';
+        if (!e.target.checked) window.clearArrow('softMistake');
         if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
+        if (window.chessHelperEngine?.refreshSoftMistakesCard) window.chessHelperEngine.refreshSoftMistakesCard();
     }, { signal });
 
     document.getElementById('ch-supermode-settings').addEventListener('click', () => superSettingsOverlay.classList.add('visible'), { signal });
@@ -635,12 +633,54 @@ function setupButtonEvents() {
     superSettingsOverlay.addEventListener('click', (e) => { if (e.target === superSettingsOverlay) closeSuperSettings(); }, { signal });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSuperSettings(); closeEngineSettings(); } }, { signal });
 
+    const softMistakesSettingsOptions = document.getElementById('ch-soft-mistakes-settings-options');
+    const softMistakesMinInput = document.getElementById('ch-soft-mistakes-min-drop');
+    const softMistakesMaxInput = document.getElementById('ch-soft-mistakes-max-drop');
+    const softMistakesCountSelect = document.getElementById('ch-soft-mistakes-count');
+    const softMistakesSettingsNote = document.getElementById('ch-soft-mistakes-settings-note');
+    const syncSoftMistakesSettingsAvailability = () => {
+        if (softMistakesSettingsOptions) {
+            softMistakesSettingsOptions.dataset.disabled = String(!window.chessHelper.superModeFeatures.softMistakes);
+        }
+    };
+    const saveSoftMistakesConfig = () => {
+        const minPawns = Number.parseFloat(softMistakesMinInput.value);
+        const maxPawns = Number.parseFloat(softMistakesMaxInput.value);
+        const minDropCp = Math.round(minPawns * 100);
+        const maxDropCp = Math.round(maxPawns * 100);
+        if (!Number.isFinite(minPawns) || !Number.isFinite(maxPawns) || minDropCp < 10 || minDropCp > 300 || maxDropCp < 20 || maxDropCp > 400 || minDropCp > maxDropCp) {
+            softMistakesSettingsNote.textContent = minDropCp > maxDropCp
+                ? 'Min drop must be <= Max drop.'
+                : 'Enter drops from 0.10 to 3.00 (min) and 0.20 to 4.00 (max) pawns.';
+            softMistakesSettingsNote.classList.add('is-error');
+            return false;
+        }
+        const maxResults = Math.max(1, Math.min(4, Number.parseInt(softMistakesCountSelect.value, 10) || 3));
+        softMistakesCountSelect.value = String(maxResults);
+        window.chessHelper.softMistakes = { minDropCp, maxDropCp, maxResults };
+        localStorage.setItem('ch_soft_mistakes_min_cp', String(minDropCp));
+        localStorage.setItem('ch_soft_mistakes_max_cp', String(maxDropCp));
+        localStorage.setItem('ch_soft_mistakes_count', String(maxResults));
+        softMistakesSettingsNote.textContent = `Finds up to ${maxResults} move(s) dropping ${(minDropCp / 100).toFixed(2)}–${(maxDropCp / 100).toFixed(2)} pawns when you click Find.`;
+        softMistakesSettingsNote.classList.remove('is-error');
+        if (window.chessHelperEngine?.refreshSoftMistakesCard) window.chessHelperEngine.refreshSoftMistakesCard();
+        return true;
+    };
+    softMistakesMinInput.addEventListener('change', saveSoftMistakesConfig, { signal });
+    softMistakesMaxInput.addEventListener('change', saveSoftMistakesConfig, { signal });
+    softMistakesCountSelect.addEventListener('change', saveSoftMistakesConfig, { signal });
+
     superSettingsOverlay.querySelectorAll('[data-super-feature]').forEach(input => {
         input.addEventListener('change', (e) => {
             const key = e.target.dataset.superFeature;
             if (!key || !Object.prototype.hasOwnProperty.call(window.chessHelper.superModeFeatures, key)) return;
             window.chessHelper.superModeFeatures[key] = e.target.checked;
             localStorage.setItem(`ch_super_${key}`, String(e.target.checked));
+            if (key === 'softMistakes') {
+                syncSoftMistakesSettingsAvailability();
+                if (!e.target.checked) window.clearArrow('softMistake');
+                if (window.chessHelperEngine?.refreshSoftMistakesCard) window.chessHelperEngine.refreshSoftMistakesCard();
+            }
             if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
         }, { signal });
     });
@@ -682,6 +722,9 @@ function setupButtonEvents() {
         superSettingsOverlay.querySelectorAll('[data-super-feature]').forEach(input => {
             input.checked = false;
         });
+        syncSoftMistakesSettingsAvailability();
+        window.clearArrow('softMistake');
+        if (window.chessHelperEngine?.refreshSoftMistakesCard) window.chessHelperEngine.refreshSoftMistakesCard();
         if (window.chessHelperEngine?.refreshSuperMode) window.chessHelperEngine.refreshSuperMode();
     }, { signal });
 
@@ -797,10 +840,11 @@ function setupButtonEvents() {
 
 // --- VISUALIZATION ---
 const ARROW_CONFIG = {
-    d15:      { stroke: '#4ade80', hlStart: 'rgba(74,222,128,0.35)', hlEnd: 'rgba(74,222,128,0.55)', speed: 1.0   },
-    d10:      { stroke: '#2dd4bf', hlStart: 'rgba(45,212,191,0.35)', hlEnd: 'rgba(45,212,191,0.55)', speed: 1.3   },
-    d5:       { stroke: '#38bdf8', hlStart: 'rgba(56,189,248,0.35)', hlEnd: 'rgba(56,189,248,0.55)', speed: 0.75  },
-    database: { stroke: '#5aa4ff', hlStart: 'rgba(67,126,255,0.35)', hlEnd: 'rgba(90,164,255,0.55)', speed: 0.9   },
+    d15:         { stroke: '#4ade80', hlStart: 'rgba(74,222,128,0.35)', hlEnd: 'rgba(74,222,128,0.55)', speed: 1.0   },
+    d10:         { stroke: '#2dd4bf', hlStart: 'rgba(45,212,191,0.35)', hlEnd: 'rgba(45,212,191,0.55)', speed: 1.3   },
+    d5:          { stroke: '#38bdf8', hlStart: 'rgba(56,189,248,0.35)', hlEnd: 'rgba(56,189,248,0.55)', speed: 0.75  },
+    database:    { stroke: '#5aa4ff', hlStart: 'rgba(67,126,255,0.35)', hlEnd: 'rgba(90,164,255,0.55)', speed: 0.9   },
+    softMistake: { stroke: '#f59e0b', hlStart: 'rgba(245,158,11,0.28)', hlEnd: 'rgba(245,158,11,0.48)', speed: 1.15  },
 };
 
 const _colToNum = { 'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5, 'f': 6, 'g': 7, 'h': 8 };

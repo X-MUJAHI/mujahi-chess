@@ -256,6 +256,61 @@ class RequestQueue {
     });
   }
 
+  /**
+   * Runs a custom async task serialized against regular engine searches using the same
+   * single-process lock (`activeJob` / `waitingJobs`).
+   */
+  enqueueTask({ timeoutMs, signal = null, task }) {
+    if (signal?.aborted) {
+      return Promise.reject(new EngineCancelledError('Client disconnected before queueing.'));
+    }
+    if (typeof task !== 'function') {
+      return Promise.reject(new Error('enqueueTask requires a task function.'));
+    }
+
+    return new Promise((resolve, reject) => {
+      if (this.waitingJobs.length >= this.config.engine.maxQueue) {
+        reject(new QueueFullError(`Analysis queue is full (max ${this.config.engine.maxQueue} pending jobs).`));
+        return;
+      }
+
+      const waiter = {
+        id: crypto.randomUUID(),
+        clientSessionId: null,
+        requestedDepths: [],
+        requestedSet: new Set(),
+        maxDepth: 0,
+        timeoutMs: timeoutMs === undefined ? this.config.engine.timeoutMs : timeoutMs,
+        onDepthSnapshot: null,
+        signal,
+        onAbort: null,
+        settled: false,
+        resolve,
+        reject,
+      };
+
+      const newJob = {
+        id: crypto.randomUUID(),
+        fen: null,
+        sideToMove: 'white',
+        targetDepth: 0,
+        allRequestedDepths: new Set(),
+        timeoutMs: waiter.timeoutMs,
+        waiters: new Set(),
+        capturedSnapshots: new Map(),
+        deduplicatedCount: 0,
+        finished: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        customTask: task,
+      };
+
+      this.waitingJobs.push(newJob);
+      this._attachWaiterToJob(newJob, waiter, false);
+      this._schedulePump();
+    });
+  }
+
   _attachWaiterToJob(job, waiter, isDeduplicated) {
     waiter.isDeduplicated = isDeduplicated;
     job.waiters.add(waiter);
@@ -307,6 +362,18 @@ class RequestQueue {
         if (hasUnbounded) jobTimeout = 0;
 
         try {
+          if (typeof job.customTask === 'function') {
+            const customResult = await job.customTask({
+              engineManager: this.engineManager,
+              timeoutMs: jobTimeout,
+            });
+            job.finished = true;
+            for (const waiter of [...job.waiters]) {
+              this._settleWaiter(job, waiter, null, customResult);
+            }
+            continue;
+          }
+
           const searchResult = await this.engineManager.analyze({
             fen: job.fen,
             sideToMove: job.sideToMove,

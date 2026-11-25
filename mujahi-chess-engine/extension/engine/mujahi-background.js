@@ -61,6 +61,31 @@ async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, s
   return payload;
 }
 
+async function analyzeSoftMistakes({ baseUrl, fen, minDropCp, maxDropCp, maxResults, timeoutMs, signal }) {
+  const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze/soft-mistakes`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      fen,
+      minDropCp,
+      maxDropCp,
+      maxResults,
+      ...(timeoutMs ? { timeoutMs } : {}),
+    }),
+    signal,
+  });
+
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw buildApiError(res.status, payload, 'MUJAHI Soft Mistakes');
+  }
+  return payload;
+}
+
 async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId, signal, onEvent }) {
   const sessionId = clientSessionId || getSessionId();
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze/stream`;
@@ -292,6 +317,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({
           ok: false,
           error: err?.message || 'MUJAHI JSON request failed',
+          status: err?.status || 0,
+          code: err?.code || '',
+          extensionId: chrome.runtime?.id || '',
+        })
+      );
+    return true;
+  }
+
+  if (msg.type === 'MUJAHI_SOFT_MISTAKES') {
+    const controller = new AbortController();
+    analyzeSoftMistakes({
+      baseUrl: msg.baseUrl,
+      fen: msg.fen,
+      minDropCp: msg.minDropCp,
+      maxDropCp: msg.maxDropCp,
+      maxResults: msg.maxResults,
+      timeoutMs: msg.timeoutMs,
+      signal: controller.signal,
+    })
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((err) =>
+        sendResponse({
+          ok: false,
+          error: err?.message || 'MUJAHI soft mistakes request failed',
           status: err?.status || 0,
           code: err?.code || '',
           extensionId: chrome.runtime?.id || '',

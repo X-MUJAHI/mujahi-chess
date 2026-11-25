@@ -50,7 +50,8 @@ function parseUciOptionLine(line) {
  * Parses a Stockfish UCI `info` line into a structured evaluation snapshot.
  * Returns null for auxiliary info lines (e.g., currmove, string) that lack depth/score.
  */
-function parseUciInfoLine(line, sideToMove = 'white') {
+function parseUciInfoLine(line, sideToMove = 'white', options = {}) {
+  const allowMultiPv = Boolean(options?.allowMultiPv);
   const trimmed = line.trim();
   if (!trimmed.startsWith('info ')) return null;
   if (/\bcurrmove\b/.test(trimmed) && !/\bscore\b/.test(trimmed)) return null;
@@ -60,7 +61,7 @@ function parseUciInfoLine(line, sideToMove = 'white') {
 
   const multipvMatch = /\bmultipv\s+(\d+)/.exec(trimmed);
   const multipv = multipvMatch ? Number.parseInt(multipvMatch[1], 10) : 1;
-  if (multipv !== 1) return null;
+  if (!allowMultiPv && multipv !== 1) return null;
 
   const scoreMatch = /\bscore\s+(cp|mate)\s+(-?\d+)(?:\s+(lowerbound|upperbound))?/.exec(trimmed);
   const pvMatch = /\bpv\s+(.+)$/.exec(trimmed);

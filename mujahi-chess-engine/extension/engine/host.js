@@ -47,7 +47,7 @@
             }
             const command = String(data.command || '').trim();
             // Accept only standard UCI commands used by Chess Helper.
-            if (!/^(uci|isready|ucinewgame|stop|quit|position (?:fen .+|startpos(?: moves .*)?)|go depth \d+|setoption name [A-Za-z0-9 _]+ value \d+)$/.test(command)) return;
+            if (!/^(uci|isready|ucinewgame|stop|quit|position (?:fen .+|startpos(?: moves .*)?)|go (?:depth|movetime) \d+(?: searchmoves(?: [a-h][1-8][a-h][1-8][qrbn]?)+)?|setoption name [A-Za-z0-9 _]+ value \d+)$/.test(command)) return;
             worker.postMessage(command);
         } else if (data.type === 'terminate') {
             try { worker?.terminate(); } catch (_) {}

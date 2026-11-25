@@ -1,7 +1,12 @@
 'use strict';
 
 const express = require('express');
-const { validateAnalyzeBody, validateAnalyzeQuery } = require('../middleware/validation');
+const {
+  validateAnalyzeBody,
+  validateAnalyzeQuery,
+  validateSoftMistakesBody,
+} = require('../middleware/validation');
+const { runSoftMistakeScan } = require('../utils/soft-mistakes');
 
 function formatSseEvent(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -145,6 +150,70 @@ function createAnalyzeRouter(engineManager, requestQueue, config) {
 
   router.post('/stream', validateAnalyzeBody(config), handleSseStream);
   router.get('/stream', validateAnalyzeQuery(config), handleSseStream);
+
+  // On-demand 2-stage soft-mistake scan (MultiPV 24 @ depth 7 -> searchmoves @ depth 10)
+  router.post('/soft-mistakes', validateSoftMistakesBody(config), async (req, res, next) => {
+    const abortController = new AbortController();
+    const onClose = () => {
+      if (!res.writableEnded) {
+        abortController.abort();
+      }
+    };
+    res.on('close', onClose);
+
+    try {
+      const { fen, sideToMove, minDropCp, maxDropCp, maxResults, timeoutMs } =
+        req.validatedSoftMistakes;
+
+      const scan = await requestQueue.enqueueTask({
+        timeoutMs,
+        signal: abortController.signal,
+        task: ({ engineManager: em, timeoutMs: effectiveTimeout }) =>
+          runSoftMistakeScan({
+            fen,
+            sideToMove,
+            minDropCp,
+            maxDropCp,
+            maxResults,
+            stage1Depth: 7,
+            stage2Depth: Math.min(10, config.engine.maxDepth),
+            multiPvLimit: 24,
+            runMultiPv: ({ targetDepth, multiPv, searchMoves }) =>
+              em.analyzeMultiPv({
+                fen,
+                sideToMove,
+                targetDepth,
+                multiPv,
+                searchMoves,
+                timeoutMs: effectiveTimeout,
+                signal: abortController.signal,
+              }),
+          }),
+      });
+
+      if (res.writableEnded || abortController.signal.aborted) return;
+
+      const status = engineManager.getStatus();
+      res.json({
+        success: true,
+        engine: config.pinnedStockfish.brandName,
+        version: status.version,
+        tag: status.pinnedTag,
+        fen,
+        sideToMove,
+        minDropCp,
+        maxDropCp,
+        maxResults,
+        ...scan,
+      });
+    } catch (err) {
+      if (!res.writableEnded && !abortController.signal.aborted) {
+        next(err);
+      }
+    } finally {
+      res.off('close', onClose);
+    }
+  });
 
   return router;
 }

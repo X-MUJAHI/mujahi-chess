@@ -184,8 +184,76 @@ function validateAnalyzeQuery(config) {
   };
 }
 
+const ALLOWED_SOFT_MISTAKE_FIELDS = new Set([
+  'fen',
+  'minDropCp',
+  'maxDropCp',
+  'maxResults',
+  'timeoutMs',
+]);
+
+function validateSoftMistakesBody(config) {
+  return (req, res, next) => {
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new ValidationError('Request body must be a JSON object.', 'INVALID_BODY');
+      }
+
+      for (const key of Object.keys(body)) {
+        if (!ALLOWED_SOFT_MISTAKE_FIELDS.has(key)) {
+          throw new ValidationError(
+            `Unsupported parameter "${key}". Allowed parameters: fen, minDropCp, maxDropCp, maxResults, timeoutMs.`,
+            'UNSUPPORTED_PARAMETER'
+          );
+        }
+      }
+
+      const fenResult = validateFen(body.fen);
+      if (!fenResult.valid) {
+        throw new ValidationError(fenResult.error, 'INVALID_FEN');
+      }
+
+      const minDropCp =
+        body.minDropCp === undefined ? 25 : Number(body.minDropCp);
+      const maxDropCp =
+        body.maxDropCp === undefined ? 85 : Number(body.maxDropCp);
+      const maxResults =
+        body.maxResults === undefined ? 3 : Number(body.maxResults);
+
+      if (!Number.isInteger(minDropCp) || minDropCp < 10 || minDropCp > 300) {
+        throw new ValidationError('"minDropCp" must be an integer between 10 and 300.', 'INVALID_RANGE');
+      }
+      if (!Number.isInteger(maxDropCp) || maxDropCp < 20 || maxDropCp > 400 || maxDropCp < minDropCp) {
+        throw new ValidationError(
+          '"maxDropCp" must be an integer between 20 and 400 and >= minDropCp.',
+          'INVALID_RANGE'
+        );
+      }
+      if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 5) {
+        throw new ValidationError('"maxResults" must be an integer between 1 and 5.', 'INVALID_COUNT');
+      }
+
+      const timeoutMs = parseTimeoutMs(body.timeoutMs, config);
+
+      req.validatedSoftMistakes = {
+        fen: fenResult.fen,
+        sideToMove: fenResult.sideToMove,
+        minDropCp,
+        maxDropCp,
+        maxResults,
+        timeoutMs,
+      };
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
 module.exports = {
   ValidationError,
   validateAnalyzeBody,
   validateAnalyzeQuery,
+  validateSoftMistakesBody,
 };

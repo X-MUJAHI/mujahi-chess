@@ -504,6 +504,206 @@ class EngineManager extends EventEmitter {
   }
 
   /**
+   * Executes a serialized MultiPV search (optionally restricted via `searchMoves`)
+   * and restores `MultiPV` back to the configured default before unlocking.
+   */
+  async analyzeMultiPv({
+    fen,
+    sideToMove,
+    targetDepth,
+    multiPv = 24,
+    searchMoves = null,
+    timeoutMs,
+    signal,
+  }) {
+    if (this.shuttingDown) {
+      throw new EngineUnavailableError('Engine is shutting down.');
+    }
+    if (this.state === 'error' || this.state === 'stopped') {
+      await this.start();
+    }
+    if (this.state !== 'ready' || !this.channel) {
+      throw new EngineUnavailableError(`Engine is not idle (state=${this.state}).`);
+    }
+    if (signal?.aborted) {
+      throw new EngineCancelledError('Request aborted before engine execution.');
+    }
+
+    const gen = ++this.generation;
+    this.state = 'busy';
+
+    const clampedMultiPv = Math.max(1, Math.min(40, Number.parseInt(multiPv, 10) || 1));
+    const safeSearchMoves = Array.isArray(searchMoves)
+      ? searchMoves.filter((m) => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(String(m || '')))
+      : [];
+    const defaultMultiPv = this.config.engine.multiPv || 1;
+    const snapshotsByDepth = new Map(); // depth -> Map(multipv -> snap)
+    let bestMoveSeen = false;
+
+    const effectiveTimeout =
+      timeoutMs === undefined ? this.config.engine.timeoutMs : timeoutMs;
+
+    const restoreDefaultMultiPv = () => {
+      try {
+        if (this.channel && !this.channel.closed) {
+          this.channel.send(`setoption name MultiPV value ${defaultMultiPv}`);
+        }
+      } catch (_) {}
+    };
+
+    return new Promise((resolve, reject) => {
+      let timeoutTimer = null;
+      let stopTimer = null;
+
+      const cleanup = () => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (stopTimer) clearTimeout(stopTimer);
+        if (signal && onAbortSignal) signal.removeEventListener('abort', onAbortSignal);
+        this.channel?.off('line', onLine);
+      };
+
+      const searchCtx = {
+        gen,
+        settled: false,
+        stopping: false,
+        stopReason: null,
+        cleanup,
+        resolve,
+        reject,
+        triggerStop: null,
+      };
+      this.activeSearch = searchCtx;
+
+      const finish = (err, payload = null) => {
+        if (searchCtx.settled) return;
+        searchCtx.settled = true;
+        cleanup();
+        if (this.activeSearch === searchCtx) {
+          this.activeSearch = null;
+        }
+        if (err) {
+          reject(err);
+        } else {
+          resolve(payload);
+        }
+      };
+
+      const triggerStop = (reasonError) => {
+        if (searchCtx.settled || searchCtx.stopping) return;
+        searchCtx.stopping = true;
+        searchCtx.stopReason = reasonError;
+        this.state = 'stopping';
+
+        try {
+          if (this.channel && !this.channel.closed) {
+            this.channel.send('stop');
+          }
+        } catch (_) {
+          this.restart()
+            .catch(() => {})
+            .finally(() => finish(reasonError));
+          return;
+        }
+
+        stopTimer = setTimeout(() => {
+          if (searchCtx.settled) return;
+          this.logger.warn('[EngineManager] Stockfish did not answer stop in time; restarting process.');
+          this.restart()
+            .catch(() => {})
+            .finally(() => finish(reasonError));
+        }, this.config.engine.stopTimeoutMs);
+      };
+      searchCtx.triggerStop = triggerStop;
+
+      const onAbortSignal = () => {
+        triggerStop(new EngineCancelledError('Client cancelled MultiPV analysis.'));
+      };
+      if (signal) {
+        signal.addEventListener('abort', onAbortSignal, { once: true });
+      }
+
+      if (effectiveTimeout > 0) {
+        timeoutTimer = setTimeout(() => {
+          triggerStop(
+            new EngineTimeoutError(`MultiPV analysis timed out after ${effectiveTimeout}ms.`)
+          );
+        }, effectiveTimeout);
+      }
+
+      const onLine = (line) => {
+        if (this.generation !== gen || searchCtx.settled) return;
+
+        if (line.startsWith('info ')) {
+          const snap = parseUciInfoLine(line, sideToMove, { allowMultiPv: true });
+          if (!snap) return;
+          let pvMap = snapshotsByDepth.get(snap.depth);
+          if (!pvMap) {
+            pvMap = new Map();
+            snapshotsByDepth.set(snap.depth, pvMap);
+          }
+          const existing = pvMap.get(snap.multipv);
+          if (!existing || snap.bound === 'exact' || existing.bound !== 'exact') {
+            pvMap.set(snap.multipv, snap);
+          }
+          return;
+        }
+
+        if (line.startsWith('bestmove ')) {
+          if (bestMoveSeen) return;
+          bestMoveSeen = true;
+
+          restoreDefaultMultiPv();
+          const parsedBest = parseBestMoveLine(line);
+
+          if (searchCtx.stopping) {
+            if (!this.shuttingDown && this.state === 'stopping') {
+              this.state = 'ready';
+            }
+            finish(searchCtx.stopReason);
+            return;
+          }
+
+          if (!this.shuttingDown) {
+            this.state = 'ready';
+          }
+
+          let chosenLines = [];
+          const depthsDesc = [...snapshotsByDepth.keys()].sort((a, b) => b - a);
+          for (const d of depthsDesc) {
+            const pvMap = snapshotsByDepth.get(d);
+            const entries = [...pvMap.values()].filter((s) => s.bestmove);
+            if (entries.length) {
+              chosenLines = entries.sort((a, b) => a.multipv - b.multipv);
+              break;
+            }
+          }
+
+          finish(null, {
+            bestmove: parsedBest.bestmove,
+            ponder: parsedBest.ponder,
+            terminal: parsedBest.terminal,
+            lines: chosenLines,
+          });
+        }
+      };
+
+      this.channel.on('line', onLine);
+
+      try {
+        this.channel.send(`setoption name MultiPV value ${clampedMultiPv}`);
+        this.channel.send(`position fen ${fen}`);
+        const moveFilter = safeSearchMoves.length ? ` searchmoves ${safeSearchMoves.join(' ')}` : '';
+        this.channel.send(`go depth ${targetDepth}${moveFilter}`);
+      } catch (writeErr) {
+        restoreDefaultMultiPv();
+        this.restart()
+          .catch(() => {})
+          .finally(() => finish(new EngineUnavailableError(writeErr.message)));
+      }
+    });
+  }
+
+  /**
    * Requests immediate cancellation of the active search (used when all attached
    * client waiters have disconnected or been superseded by a newer position).
    */

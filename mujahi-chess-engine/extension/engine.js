@@ -50,11 +50,11 @@ const databaseInFlight = new Map();
 const engineAnalysisCache = new Map();
 const superModeAuxCache = new Map();
 const superModeSnapshotsByFen = new Map();
-const otherGoodMovesCache = new Map();
-let otherGoodMovesController = null;
-let otherGoodMovesRequestKey = '';
-let otherGoodMovesCurrentFen = '';
-let otherGoodMovesRetryAfter = 0;
+const softMistakesCache = new Map();
+let softMistakesController = null;
+let softMistakesCurrentFen = '';
+let softMistakesSelectedMove = '';
+let softMistakesLastState = { fen: '', status: 'Click Find when you want mild mistakes', candidates: [], sourceLabel: '' };
 function setBoundedCache(cache, key, value, limit = 300) { cache.delete(key); cache.set(key, value); if (cache.size > limit) cache.delete(cache.keys().next().value); }
 
 // --- LOCAL STOCKFISH 19 WASM BRIDGE ---
@@ -291,6 +291,8 @@ function parseLocalUciInfo(fen, line) {
     const pvMatch = line.match(/\bpv\s+(.+)$/);
     if (!depthMatch || !pvMatch) return null;
     const depth = Number(depthMatch[1]);
+    const multipvMatch = line.match(/\bmultipv\s+(\d+)/);
+    const multipv = multipvMatch ? Number(multipvMatch[1]) : 1;
     const seldepthMatch = line.match(/\bseldepth\s+(\d+)/);
     const nodesMatch = line.match(/\bnodes\s+(\d+)/);
     const npsMatch = line.match(/\bnps\s+(\d+)/);
@@ -314,6 +316,7 @@ function parseLocalUciInfo(fen, line) {
     return {
         move,
         ponder: pvList[1] || null,
+        multipv,
         evaluation: Number.isFinite(evaluation) ? evaluation : null,
         rawCp: Number.isFinite(rawCp) ? rawCp : null,
         mate: Number.isFinite(mate) ? mate : null,
@@ -337,7 +340,7 @@ function settleLocalWasmWaiter(job, waiter, move, error = null) {
     if (error) waiter.reject(error); else waiter.resolve(move || null);
 }
 function resolveLocalWasmWaiters(job, analysis) {
-    if (!analysis) return;
+    if (!analysis || job.isMultiPv) return;
     for (const waiter of [...job.waiters]) {
         if (analysis.depth >= waiter.depth) {
             const cacheKey = `wasm|${job.fen}|${waiter.depth}`;
@@ -346,13 +349,42 @@ function resolveLocalWasmWaiters(job, analysis) {
         }
     }
 }
-function finishLocalWasmSearch(job, move, error = null) {
+function extractLocalMultiPvLines(job) {
+    if (!job?.multiPvByDepth || !job.multiPvByDepth.size) return [];
+    const depthsDesc = [...job.multiPvByDepth.keys()].sort((a, b) => b - a);
+    for (const d of depthsDesc) {
+        const pvMap = job.multiPvByDepth.get(d);
+        const entries = [...pvMap.values()].filter(s => s && s.move);
+        if (entries.length) {
+            return entries.sort((a, b) => (a.multipv || 999) - (b.multipv || 999));
+        }
+    }
+    return [];
+}
+function restoreLocalMultiPvDefault() {
+    try {
+        if (localEngineFrame?.contentWindow && localEngineHostReady) {
+            localEnginePost({ type: 'command', command: 'setoption name MultiPV value 1' });
+        }
+    } catch (_) {}
+}
+function finishLocalWasmSearch(job, moveOrPayload, error = null) {
     if (!job || job.finished) return;
     job.finished = true;
-    if (error) {
+    if (job.isMultiPv) {
+        restoreLocalMultiPvDefault();
+        if (error) {
+            for (const waiter of [...job.waiters]) settleLocalWasmWaiter(job, waiter, null, error);
+        } else {
+            const payload = (moveOrPayload && typeof moveOrPayload === 'object')
+                ? moveOrPayload
+                : { bestmove: moveOrPayload || null, terminal: !moveOrPayload, lines: extractLocalMultiPvLines(job) };
+            for (const waiter of [...job.waiters]) settleLocalWasmWaiter(job, waiter, payload);
+        }
+    } else if (error) {
         for (const waiter of [...job.waiters]) settleLocalWasmWaiter(job, waiter, null, error);
     } else {
-        const finalMove = move || job.latestAnalysis?.move || null;
+        const finalMove = moveOrPayload || job.latestAnalysis?.move || null;
         for (const waiter of [...job.waiters]) {
             if (job.latestAnalysis) {
                 const cacheKey = `wasm|${job.fen}|${waiter.depth}`;
@@ -362,7 +394,7 @@ function finishLocalWasmSearch(job, move, error = null) {
         }
     }
     if (localEngineActiveSearch === job) localEngineActiveSearch = null;
-    if (localWasmSearches.get(job.fen) === job) localWasmSearches.delete(job.fen);
+    if (!job.isMultiPv && localWasmSearches.get(job.fen) === job) localWasmSearches.delete(job.fen);
     Promise.resolve().then(pumpLocalWasmQueue);
 }
 function handleLocalWasmLine(job, line) {
@@ -370,6 +402,19 @@ function handleLocalWasmLine(job, line) {
     if (line.startsWith('info ')) {
         const analysis = parseLocalUciInfo(job.fen, line);
         if (!analysis) return;
+        if (job.isMultiPv) {
+            let pvMap = job.multiPvByDepth.get(analysis.depth);
+            if (!pvMap) {
+                pvMap = new Map();
+                job.multiPvByDepth.set(analysis.depth, pvMap);
+            }
+            const existing = pvMap.get(analysis.multipv);
+            if (!existing || analysis.bound === 'exact' || existing.bound !== 'exact') {
+                pvMap.set(analysis.multipv, analysis);
+            }
+            return;
+        }
+        if (analysis.multipv !== 1) return;
         job.latestAnalysis = analysis;
         const prior = engineAnalysisCache.get(job.fen);
         if (!prior || analysis.depth >= (prior.depth || 0)) {
@@ -381,6 +426,15 @@ function handleLocalWasmLine(job, line) {
     }
     if (line.startsWith('bestmove ')) {
         const move = line.split(/\s+/)[1];
+        const cleanMove = move && move !== '(none)' && move !== '0000' ? move : null;
+        if (job.isMultiPv) {
+            finishLocalWasmSearch(job, {
+                bestmove: cleanMove,
+                terminal: !cleanMove,
+                lines: extractLocalMultiPvLines(job)
+            });
+            return;
+        }
         if (job.restartDepth && job.restartDepth > (job.latestAnalysis?.depth || 0) && job.waiters.length) {
             job.started = false;
             job.startedDepth = 0;
@@ -391,7 +445,7 @@ function handleLocalWasmLine(job, line) {
             Promise.resolve().then(pumpLocalWasmQueue);
             return;
         }
-        finishLocalWasmSearch(job, move && move !== '(none)' && move !== '0000' ? move : null);
+        finishLocalWasmSearch(job, cleanMove);
     }
 }
 async function pumpLocalWasmQueue() {
@@ -399,7 +453,7 @@ async function pumpLocalWasmQueue() {
     const job = localEngineSearchQueue.shift();
     if (!job || job.finished) { Promise.resolve().then(pumpLocalWasmQueue); return; }
     if (!job.waiters.length) {
-        if (localWasmSearches.get(job.fen) === job) localWasmSearches.delete(job.fen);
+        if (!job.isMultiPv && localWasmSearches.get(job.fen) === job) localWasmSearches.delete(job.fen);
         Promise.resolve().then(pumpLocalWasmQueue);
         return;
     }
@@ -410,12 +464,61 @@ async function pumpLocalWasmQueue() {
         if (!job.waiters.length) { finishLocalWasmSearch(job, null); return; }
         job.started = true;
         job.startedDepth = job.maxDepth;
+        if (job.isMultiPv) {
+            localEnginePost({ type: 'command', command: `setoption name MultiPV value ${job.multiPv}` });
+        } else {
+            localEnginePost({ type: 'command', command: 'setoption name MultiPV value 1' });
+        }
         localEnginePost({ type: 'command', command: `position fen ${job.fen}` });
-        localEnginePost({ type: 'command', command: `go depth ${job.startedDepth}` });
+        const moveFilter = job.isMultiPv && Array.isArray(job.searchMoves) && job.searchMoves.length
+            ? ` searchmoves ${job.searchMoves.join(' ')}`
+            : '';
+        localEnginePost({ type: 'command', command: `go depth ${job.startedDepth}${moveFilter}` });
     } catch (error) {
         if (!localEngineFailure) failLocalEngine(error);
         else finishLocalWasmSearch(job, null, error);
     }
+}
+function runLocalWasmMultiPv(fen, { depth = 7, multiPv = 24, searchMoves = null, signal = null } = {}) {
+    if (signal?.aborted) return Promise.reject(localEngineAbortError());
+    if (localEngineFailure) return Promise.reject(localEngineFailure);
+    const clampedMultiPv = Math.max(1, Math.min(40, Number.parseInt(multiPv, 10) || 1));
+    const safeMoves = Array.isArray(searchMoves)
+        ? searchMoves.filter(m => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(String(m || '')))
+        : null;
+    return new Promise((resolve, reject) => {
+        const job = {
+            isMultiPv: true,
+            fen,
+            maxDepth: Math.max(1, Math.min(18, Number.parseInt(depth, 10) || 7)),
+            multiPv: clampedMultiPv,
+            searchMoves: safeMoves,
+            multiPvByDepth: new Map(),
+            startedDepth: 0,
+            started: false,
+            finished: false,
+            waiters: [],
+            latestAnalysis: null
+        };
+        const waiter = { depth: job.maxDepth, signal, resolve, reject, settled: false, abortHandler: null };
+        job.waiters.push(waiter);
+        if (signal) {
+            waiter.abortHandler = () => {
+                settleLocalWasmWaiter(job, waiter, null, localEngineAbortError());
+                if (!job.waiters.length) {
+                    if (localEngineActiveSearch === job) {
+                        try { localEnginePost({ type: 'command', command: 'stop' }); } catch (_) {}
+                    } else {
+                        localEngineSearchQueue = localEngineSearchQueue.filter(item => item !== job);
+                    }
+                }
+            };
+            signal.addEventListener('abort', waiter.abortHandler, { once: true });
+            if (signal.aborted) { waiter.abortHandler(); return; }
+        }
+        localEngineSearchQueue.push(job);
+        Promise.resolve().then(pumpLocalWasmQueue);
+    });
 }
 function fetchLocalWasmBestMove(fen, depth, signal, cacheKey) {
     if (signal?.aborted) return Promise.resolve(null);
@@ -474,7 +577,9 @@ function clearFenCache() {
     engineAnalysisCache.clear();
     superModeAuxCache.clear();
     superModeSnapshotsByFen.clear();
-    otherGoodMovesCache.clear();
+    softMistakesCache.clear();
+    softMistakesSelectedMove = '';
+    softMistakesLastState = { fen: '', status: 'Click Find when you want mild mistakes', candidates: [], sourceLabel: '' };
     trackedCastling = null;
     trackedCastlingBoard = null;
     log("FEN cache cleared");
@@ -798,157 +903,365 @@ async function fetchJsonWithRetry(url, options, service) {
     return null;
 }
 
-function renderOtherGoodMovesState({ status = '', data = null, count = 2, fenComplete = lastFenWasNativeComplete } = {}) {
-    const card = document.getElementById('ch-other-good-moves-card');
-    const list = document.getElementById('ch-other-good-moves-list');
-    const note = document.getElementById('ch-other-good-moves-note');
-    const countLabel = document.getElementById('ch-other-good-moves-count-label');
-    if (!card || !list) return;
-    const cfg = window.chessHelper?.otherGoodMoves || {};
-    if (!cfg.enabled) { card.style.display = 'none'; return; }
-    card.style.display = 'block';
-    list.replaceChildren();
-
-    const addStatus = message => {
-        const item = document.createElement('span');
-        item.className = 'ch-other-good-moves-status';
-        item.textContent = message;
-        list.appendChild(item);
+function getSoftMistakesConfig() {
+    const cfg = window.chessHelper || {};
+    const sm = cfg.softMistakes || {};
+    const minDropCp = Math.max(10, Math.min(300, Number.parseInt(sm.minDropCp, 10) || 25));
+    const maxDropCp = Math.max(minDropCp, Math.min(400, Number.parseInt(sm.maxDropCp, 10) || 85));
+    const maxResults = Math.max(1, Math.min(4, Number.parseInt(sm.maxResults, 10) || 3));
+    return {
+        enabled: cfg.masterToggle !== false && !!cfg.superModeEnabled && !!cfg.superModeFeatures?.softMistakes,
+        minDropCp,
+        maxDropCp,
+        maxResults
     };
-    if (status) {
-        if (countLabel) countLabel.textContent = `max ${count}`;
-        card.title = fenComplete ? 'Lichess Cloud Eval cached alternatives' : 'Lichess Cloud Eval cached alternatives (DOM FEN)';
-        addStatus(status);
-        if (note) note.textContent = status;
-        return;
-    }
-
-    const pvs = Array.isArray(data?.pvs) ? data.pvs.slice(1, count + 1) : [];
-    const depth = Number(data?.depth) || 0;
-    if (countLabel) countLabel.textContent = depth ? `D${depth}` : `max ${count}`;
-    card.title = `Lichess Cloud Eval · Depth ${depth || '—'} · Cached MultiPV alternatives`;
-
-    if (!pvs.length) {
-        addStatus('No cached lines');
-        if (note) note.textContent = 'No cached lines';
-        return;
-    }
-
-    pvs.forEach((pv, index) => {
-        const firstMove = String(pv?.moves || '').trim().split(/\s+/)[0] || '';
-        const match = firstMove.match(/^([a-h][1-8])([a-h][1-8])([qrbn])?$/);
-        if (!match) return;
-        const row = document.createElement('div');
-        row.className = 'ch-other-good-move-row';
-        const move = document.createElement('strong');
-        move.textContent = `${match[1]}→${match[2]}${match[3] ? `=${match[3].toUpperCase()}` : ''}`;
-        const score = document.createElement('span');
-        if (pv.cp !== undefined && pv.cp !== null && Number.isFinite(Number(pv.cp))) {
-            const cp = Number(pv.cp) / 100;
-            score.textContent = `${cp > 0 ? '+' : ''}${cp.toFixed(2)}`;
-        } else if (pv.mate !== undefined && pv.mate !== null && Number.isFinite(Number(pv.mate))) {
-            const mate = Number(pv.mate);
-            score.textContent = `M${mate > 0 ? '+' : ''}${mate}`;
-        } else {
-            score.textContent = `#${index + 2}`;
-        }
-        row.append(move, score);
-        list.appendChild(row);
-    });
-    if (!list.childElementCount) addStatus('No readable lines');
-    if (note) note.textContent = `Lichess Cloud Eval · Depth ${depth || '—'}`;
 }
 
-async function loadOtherGoodMoves(fen) {
-    const cfg = window.chessHelper?.otherGoodMoves || {};
-    const count = Math.max(1, Math.min(4, Number.parseInt(cfg.count, 10) || 2));
-    if (!cfg.enabled || !fen) {
-        if (otherGoodMovesController) otherGoodMovesController.abort();
-        otherGoodMovesController = null;
-        otherGoodMovesRequestKey = '';
-        renderOtherGoodMovesState({ count });
+function getMoverCpFromLocalLine(line, activeColor) {
+    if (!line || line.mate !== null) return null;
+    const whiteCp = Number.isFinite(line.rawCp)
+        ? line.rawCp
+        : Number.isFinite(line.evaluation)
+            ? Math.round(line.evaluation * 100)
+            : null;
+    if (whiteCp === null || !Number.isFinite(whiteCp)) return null;
+    const povFactor = activeColor === 'b' ? -1 : 1;
+    return { cp: whiteCp * povFactor, whiteCp };
+}
+
+function selectStage1SoftMistakeShortlist(lines, activeColor, minDropCp, maxDropCp, limit = 4) {
+    const sorted = (Array.isArray(lines) ? lines : []).filter(l => l && l.move).sort((a, b) => (a.multipv || 999) - (b.multipv || 999));
+    if (!sorted.length) return { bestLine: null, shortlist: [], reason: 'no_moves' };
+    const bestLine = sorted[0];
+    const bestScore = getMoverCpFromLocalLine(bestLine, activeColor);
+    if (!bestScore) {
+        return { bestLine, shortlist: [], reason: bestLine.mate !== null ? 'mate_position' : 'no_score' };
+    }
+    const looseMin = Math.max(10, minDropCp - 20);
+    const looseMax = maxDropCp + 40;
+    const seen = new Set([bestLine.move]);
+    const hits = [];
+    for (let i = 1; i < sorted.length; i++) {
+        const line = sorted[i];
+        if (!line.move || seen.has(line.move)) continue;
+        seen.add(line.move);
+        const score = getMoverCpFromLocalLine(line, activeColor);
+        if (!score) continue;
+        const dropCp = bestScore.cp - score.cp;
+        if (dropCp >= looseMin && dropCp <= looseMax) {
+            hits.push({ move: line.move, dropCp });
+        }
+    }
+    hits.sort((a, b) => {
+        const aIn = a.dropCp >= minDropCp && a.dropCp <= maxDropCp ? 0 : 1;
+        const bIn = b.dropCp >= minDropCp && b.dropCp <= maxDropCp ? 0 : 1;
+        if (aIn !== bIn) return aIn - bIn;
+        return a.dropCp - b.dropCp;
+    });
+    const shortlist = hits.slice(0, limit).map(h => h.move);
+    let reason = 'ok';
+    if (!shortlist.length) {
+        const secondScore = sorted[1] ? getMoverCpFromLocalLine(sorted[1], activeColor) : null;
+        const secondDrop = secondScore ? bestScore.cp - secondScore.cp : null;
+        reason = sorted.length <= 1 ? 'only_move' : (secondDrop !== null && secondDrop > maxDropCp ? 'forced_best_move' : 'no_match_in_range');
+    }
+    return { bestLine, shortlist, reason };
+}
+
+function finalizeLocalSoftMistakeCandidates(lines, bestMoveHint, activeColor, minDropCp, maxDropCp, maxResults) {
+    const sorted = (Array.isArray(lines) ? lines : []).filter(l => l && l.move).sort((a, b) => (a.multipv || 999) - (b.multipv || 999));
+    if (!sorted.length) return { bestMove: bestMoveHint, candidates: [], reason: 'no_moves' };
+    let anchorLine = sorted[0];
+    let anchorScore = getMoverCpFromLocalLine(anchorLine, activeColor);
+    if (bestMoveHint) {
+        const hinted = sorted.find(l => l.move === bestMoveHint);
+        const hintedScore = getMoverCpFromLocalLine(hinted, activeColor);
+        if (hinted && hintedScore && (!anchorScore || hintedScore.cp >= anchorScore.cp)) {
+            anchorLine = hinted;
+            anchorScore = hintedScore;
+        }
+    }
+    if (!anchorScore) {
+        return { bestMove: anchorLine.move || bestMoveHint, candidates: [], reason: anchorLine.mate !== null ? 'mate_position' : 'no_score' };
+    }
+    const matches = [];
+    const seen = new Set([anchorLine.move]);
+    for (const line of sorted) {
+        if (!line.move || seen.has(line.move)) continue;
+        seen.add(line.move);
+        const score = getMoverCpFromLocalLine(line, activeColor);
+        if (!score) continue;
+        const dropCp = Math.round(anchorScore.cp - score.cp);
+        if (dropCp < minDropCp || dropCp > maxDropCp) continue;
+        matches.push({
+            move: line.move,
+            dropCp,
+            dropPawns: Number((dropCp / 100).toFixed(2)),
+            evalCp: score.whiteCp,
+            evalPawns: Number((score.whiteCp / 100).toFixed(2))
+        });
+    }
+    matches.sort((a, b) => a.dropCp - b.dropCp);
+    return {
+        bestMove: anchorLine.move,
+        candidates: matches.slice(0, maxResults),
+        reason: matches.length ? 'ok' : 'no_match_in_range'
+    };
+}
+
+function softMistakeReasonMessage(reason, cfg) {
+    const minStr = (cfg.minDropCp / 100).toFixed(2);
+    const maxStr = (cfg.maxDropCp / 100).toFixed(2);
+    if (reason === 'forced_best_move' || reason === 'only_move') return 'Forced best move (no mild mistake)';
+    if (reason === 'mate_position') return 'Mate line active (skipped)';
+    if (reason === 'terminal') return 'Game position is terminal';
+    return `None found in −${minStr}..−${maxStr}`;
+}
+
+function renderSoftMistakesState(state = softMistakesLastState) {
+    softMistakesLastState = state;
+    const card = document.getElementById('ch-soft-mistakes-card');
+    const list = document.getElementById('ch-soft-mistakes-list');
+    const rangeLabel = document.getElementById('ch-soft-mistakes-range-label');
+    const findBtn = document.getElementById('ch-btn-find-soft-mistakes');
+    if (!card || !list) return;
+
+    const cfg = getSoftMistakesConfig();
+    if (!cfg.enabled) {
+        card.style.display = 'none';
         return;
     }
 
-    const requestKey = `${fen}|${count}`;
-    const fenComplete = lastFenWasNativeComplete;
-    otherGoodMovesCurrentFen = fen;
-    if (otherGoodMovesRequestKey === requestKey) return;
-    otherGoodMovesRequestKey = requestKey;
-    if (otherGoodMovesController) otherGoodMovesController.abort();
+    card.style.display = 'block';
+    if (rangeLabel) {
+        const minStr = (cfg.minDropCp / 100).toFixed(2);
+        const maxStr = (cfg.maxDropCp / 100).toFixed(2);
+        rangeLabel.textContent = `−${minStr}..−${maxStr}${state.sourceLabel ? ` · ${state.sourceLabel}` : ''}`;
+    }
+    if (findBtn) {
+        findBtn.disabled = Boolean(state.loading);
+        findBtn.textContent = state.loading ? 'Scanning…' : 'Find';
+    }
 
-    const cached = otherGoodMovesCache.get(requestKey);
+    list.replaceChildren();
+    const candidates = Array.isArray(state.candidates) ? state.candidates : [];
+    if (!candidates.length) {
+        const item = document.createElement('span');
+        item.className = 'ch-soft-mistakes-status';
+        item.textContent = state.status || 'Click Find when you want mild mistakes';
+        list.appendChild(item);
+        return;
+    }
+
+    for (const cand of candidates) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `ch-soft-mistake-chip${softMistakesSelectedMove === cand.move ? ' is-active' : ''}`;
+        const dropPawns = Number.isFinite(Number(cand.dropPawns)) ? Number(cand.dropPawns) : (Number(cand.dropCp || 0) / 100);
+        const evalPawns = Number.isFinite(Number(cand.evalPawns)) ? Number(cand.evalPawns) : (Number(cand.evalCp || 0) / 100);
+        btn.title = `${fmtMoveArrow(cand.move)}: drops ${dropPawns.toFixed(2)} pawns · new eval ${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)} (click to show arrow)`;
+
+        const moveEl = document.createElement('strong');
+        moveEl.textContent = fmtMoveArrow(cand.move);
+        const dropEl = document.createElement('span');
+        dropEl.className = 'ch-sm-drop';
+        dropEl.textContent = `−${dropPawns.toFixed(2)}`;
+        const evalEl = document.createElement('span');
+        evalEl.className = 'ch-sm-eval';
+        evalEl.textContent = `${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)}`;
+
+        btn.append(moveEl, dropEl, evalEl);
+        btn.addEventListener('click', () => {
+            if (softMistakesSelectedMove === cand.move) {
+                softMistakesSelectedMove = '';
+                window.clearArrow?.('softMistake');
+            } else {
+                softMistakesSelectedMove = cand.move;
+                window.drawArrow?.('softMistake', cand.move);
+            }
+            renderSoftMistakesState(softMistakesLastState);
+        });
+        list.appendChild(btn);
+    }
+}
+
+function refreshSoftMistakesCard() {
+    renderSoftMistakesState(softMistakesLastState);
+}
+
+function syncSoftMistakesForFen(fen) {
+    if (!fen) {
+        softMistakesCurrentFen = '';
+        softMistakesSelectedMove = '';
+        if (softMistakesController) softMistakesController.abort();
+        softMistakesController = null;
+        window.clearArrow?.('softMistake');
+        renderSoftMistakesState({ fen: '', status: 'Click Find when you want mild mistakes', candidates: [], sourceLabel: '' });
+        return;
+    }
+    if (fen === softMistakesCurrentFen) {
+        refreshSoftMistakesCard();
+        return;
+    }
+    softMistakesCurrentFen = fen;
+    softMistakesSelectedMove = '';
+    if (softMistakesController) softMistakesController.abort();
+    softMistakesController = null;
+    window.clearArrow?.('softMistake');
+    // Strictly on-demand: never auto-scan when the board changes; prompt user to click Find.
+    renderSoftMistakesState({ fen, status: 'Click Find for this turn', candidates: [], sourceLabel: '' });
+}
+
+function fetchMujahiSoftMistakes(fen, cfg, signal) {
+    const baseUrl = getMujahiBaseUrl();
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(localEngineAbortError()); return; }
+        if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+            reject(new Error('Extension runtime bridge unavailable.'));
+            return;
+        }
+        let settled = false;
+        const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            reject(localEngineAbortError());
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        chrome.runtime.sendMessage({
+            type: 'MUJAHI_SOFT_MISTAKES',
+            baseUrl,
+            fen,
+            minDropCp: cfg.minDropCp,
+            maxDropCp: cfg.maxDropCp,
+            maxResults: cfg.maxResults,
+            timeoutMs: 30000
+        }, (res) => {
+            signal?.removeEventListener('abort', onAbort);
+            if (settled || signal?.aborted) return;
+            settled = true;
+            const lastErr = chrome.runtime.lastError;
+            if (lastErr) { reject(new Error(lastErr.message)); return; }
+            if (!res?.ok) {
+                const err = new Error(res?.error || 'MUJAHI soft mistakes failed');
+                err.status = Number(res?.status) || 0;
+                err.code = res?.code || '';
+                reject(err);
+                return;
+            }
+            resolve(res.payload);
+        });
+    });
+}
+
+async function runLocalWasmSoftMistakes(fen, cfg, signal) {
+    const activeColor = (fen.split(/\s+/)[1] || 'w') === 'b' ? 'b' : 'w';
+    const stage1 = await runLocalWasmMultiPv(fen, { depth: 7, multiPv: 24, signal });
+    if (stage1?.terminal) {
+        return { candidates: [], reason: 'terminal', sourceLabel: 'SF19 Local' };
+    }
+    const { bestLine, shortlist, reason } = selectStage1SoftMistakeShortlist(
+        stage1?.lines || [],
+        activeColor,
+        cfg.minDropCp,
+        cfg.maxDropCp,
+        Math.max(4, cfg.maxResults + 1)
+    );
+    if (!shortlist.length) {
+        return { candidates: [], reason, sourceLabel: 'SF19 Local' };
+    }
+    const searchMoves = [bestLine.move, ...shortlist];
+    const stage2 = await runLocalWasmMultiPv(fen, {
+        depth: 10,
+        multiPv: searchMoves.length,
+        searchMoves,
+        signal
+    });
+    const out = finalizeLocalSoftMistakeCandidates(
+        stage2?.lines || [],
+        bestLine.move,
+        activeColor,
+        cfg.minDropCp,
+        cfg.maxDropCp,
+        cfg.maxResults
+    );
+    return { ...out, sourceLabel: 'SF19 Local' };
+}
+
+async function findSoftMistakes() {
+    const cfg = getSoftMistakesConfig();
+    if (!cfg.enabled) { refreshSoftMistakesCard(); return; }
+    const fen = getFEN();
+    if (!fen) {
+        renderSoftMistakesState({ fen: '', status: 'Open a live board first', candidates: [], sourceLabel: '' });
+        return;
+    }
+
+    softMistakesCurrentFen = fen;
+    softMistakesSelectedMove = '';
+    window.clearArrow?.('softMistake');
+
+    const provider = getEngineProvider();
+    const cacheKey = `${provider}|${fen}|${cfg.minDropCp}|${cfg.maxDropCp}|${cfg.maxResults}`;
+    const cached = softMistakesCache.get(cacheKey);
     if (cached) {
-        renderOtherGoodMovesState({ data: cached, count, fenComplete });
+        renderSoftMistakesState({ fen, ...cached });
         return;
     }
 
-    if (Date.now() < otherGoodMovesRetryAfter) {
-        renderOtherGoodMovesState({ status: 'Rate limited (wait 1m)', count, fenComplete });
-        return;
-    }
+    if (softMistakesController) softMistakesController.abort();
     const controller = new AbortController();
-    otherGoodMovesController = controller;
-    renderOtherGoodMovesState({ status: 'Loading…', count, fenComplete });
+    softMistakesController = controller;
+    renderSoftMistakesState({ fen, loading: true, status: 'Scanning 2-stage moves…', candidates: [], sourceLabel: '' });
 
-    const candidateFens = getCloudLookupFens(fen);
     try {
-        let matchedResult = null;
-        let lastStatus = 0;
-        let sawFailure = false;
-
-        for (const candidateFen of candidateFens) {
-            if (controller.signal.aborted) return;
-            const url = `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(candidateFen)}&multiPv=${count + 1}`;
-            const response = await fetchJsonViaBackground(url, controller.signal);
-            if (controller.signal.aborted || otherGoodMovesCurrentFen !== fen || otherGoodMovesRequestKey !== requestKey) return;
-            lastStatus = Number(response?.status) || 0;
-            if (lastStatus === 429) {
-                otherGoodMovesRetryAfter = Date.now() + 60000;
-                throw new Error('Rate limited (wait 1m)');
+        let result = null;
+        if (provider === 'mujahi') {
+            try {
+                const payload = await fetchMujahiSoftMistakes(fen, cfg, controller.signal);
+                result = {
+                    candidates: Array.isArray(payload?.candidates) ? payload.candidates : [],
+                    reason: payload?.reason || 'ok',
+                    sourceLabel: 'MUJAHI SF19'
+                };
+            } catch (apiErr) {
+                if (apiErr?.name === 'AbortError' || controller.signal.aborted) return;
+                // Fallback transparently to bundled Stockfish 19 Lite WASM if Render doesn't have the new route yet
+                result = await runLocalWasmSoftMistakes(fen, cfg, controller.signal);
             }
-            const data = response.ok ? (response.data ?? await response.json()) : null;
-            if (data && Array.isArray(data.pvs)) {
-                matchedResult = data;
-                break;
-            }
-            if (lastStatus !== 404) {
-                sawFailure = true;
-                break;
-            }
-        }
-
-        if (controller.signal.aborted || otherGoodMovesCurrentFen !== fen || otherGoodMovesRequestKey !== requestKey) return;
-        if (matchedResult) {
-            otherGoodMovesCache.set(requestKey, matchedResult);
-            if (otherGoodMovesCache.size > 180) otherGoodMovesCache.delete(otherGoodMovesCache.keys().next().value);
-            renderOtherGoodMovesState({ data: matchedResult, count, fenComplete });
-        } else if (lastStatus === 404 && !sawFailure) {
-            otherGoodMovesCache.set(requestKey, { pvs: [], depth: 0 });
-            if (otherGoodMovesCache.size > 180) otherGoodMovesCache.delete(otherGoodMovesCache.keys().next().value);
-            renderOtherGoodMovesState({ status: 'No cached lines', count, fenComplete });
         } else {
-            renderOtherGoodMovesState({ status: lastStatus ? `Unavailable (HTTP ${lastStatus})` : 'Unavailable (retry ↻)', count, fenComplete });
+            try {
+                result = await runLocalWasmSoftMistakes(fen, cfg, controller.signal);
+            } catch (wasmErr) {
+                if (wasmErr?.name === 'AbortError' || controller.signal.aborted) return;
+                const payload = await fetchMujahiSoftMistakes(fen, cfg, controller.signal);
+                result = {
+                    candidates: Array.isArray(payload?.candidates) ? payload.candidates : [],
+                    reason: payload?.reason || 'ok',
+                    sourceLabel: 'MUJAHI SF19'
+                };
+            }
         }
-    } catch (error) {
-        if (error?.name === 'AbortError' || controller.signal.aborted) return;
-        if (otherGoodMovesCurrentFen === fen && otherGoodMovesRequestKey === requestKey) {
-            renderOtherGoodMovesState({ status: error?.message === 'Rate limited (wait 1m)' ? error.message : 'Unavailable (retry ↻)', count, fenComplete });
+
+        if (controller.signal.aborted || getFEN() !== fen) return;
+        const nextState = result.candidates.length
+            ? { fen, loading: false, candidates: result.candidates, status: '', sourceLabel: result.sourceLabel }
+            : { fen, loading: false, candidates: [], status: softMistakeReasonMessage(result.reason, cfg), sourceLabel: result.sourceLabel };
+
+        setBoundedCache(softMistakesCache, cacheKey, nextState, 120);
+        renderSoftMistakesState(nextState);
+    } catch (err) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
+        if (getFEN() === fen) {
+            renderSoftMistakesState({
+                fen,
+                loading: false,
+                candidates: [],
+                status: err?.message || 'Scan failed — try again',
+                sourceLabel: ''
+            });
         }
     } finally {
-        if (otherGoodMovesController === controller) otherGoodMovesController = null;
-    }
-}
-
-function refreshOtherGoodMoves() {
-    otherGoodMovesRequestKey = '';
-    const fen = getFEN();
-    const count = Math.max(1, Math.min(4, Number.parseInt(window.chessHelper?.otherGoodMoves?.count, 10) || 2));
-    if (fen) {
-        otherGoodMovesCache.delete(`${fen}|${count}`);
-        loadOtherGoodMoves(fen);
-    } else {
-        renderOtherGoodMovesState({ count });
+        if (softMistakesController === controller) softMistakesController = null;
     }
 }
 
@@ -1971,17 +2284,20 @@ async function checkTurnAndPlay() {
     if (document.hidden) return;
     if (window.chessHelper && window.chessHelper.masterToggle === false) {
         if (activeAnalysisController) activeAnalysisController.abort();
+        if (softMistakesController) softMistakesController.abort();
+        softMistakesController = null;
         mujahiProvider?.cancelAll();
         lastObservedFen = '';
         activeAnalysisFen = '';
         if (window.clearAllArrows) window.clearAllArrows();
+        refreshSoftMistakesCard();
         return;
     }
     checkForGameEnd();
     const fen = getFEN();
     if (!fen) return;
     updateSuperModeLocal(fen);
-    loadOtherGoodMoves(fen);
+    syncSoftMistakesForFen(fen);
 
     // Always read the current FEN, even while older requests are still running.
     if (fen !== lastObservedFen) {
@@ -2127,9 +2443,8 @@ function onVisibilityChange() {
         if (turnCheckTimeout) { clearTimeout(turnCheckTimeout); turnCheckTimeout = null; }
         if (scheduledFrame) { cancelAnimationFrame(scheduledFrame); scheduledFrame = 0; }
         if (activeAnalysisController) activeAnalysisController.abort();
-        if (otherGoodMovesController) otherGoodMovesController.abort();
-        otherGoodMovesController = null;
-        otherGoodMovesRequestKey = '';
+        if (softMistakesController) softMistakesController.abort();
+        softMistakesController = null;
         mujahiProvider?.cancelAll();
         analysisGeneration++;
         activeAnalysisFen = '';
@@ -2160,7 +2475,8 @@ window.chessHelperEngine = {
     testMujahiHealth: testMujahiHealth,
     getMyColor: getMyColor,
     refreshSuperMode: refreshSuperMode,
-    refreshOtherGoodMoves: refreshOtherGoodMoves,
+    findSoftMistakes: findSoftMistakes,
+    refreshSoftMistakesCard: refreshSoftMistakesCard,
     reviewSuperModeSession: reviewSuperModeSession,
     getSuperModeSession: () => superModeSession.slice()
 };
