@@ -163,8 +163,220 @@ async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId,
   }
 }
 
+// --- LOCAL STOCKFISH OFFSCREEN HOST RELAY ---
+const LOCAL_STOCKFISH_CHANNEL = 'chess-helper-local-stockfish-v1';
+let offscreenHostPort = null;
+let offscreenHostReady = false;
+let offscreenHostError = '';
+let offscreenLifecycleLock = Promise.resolve();
+let offscreenClosingIntentionally = false;
+let activeStockfishClientPort = null;
+let pendingStockfishHostMessages = [];
+
+async function hasExistingOffscreenHost() {
+  if (typeof chrome === 'undefined') return false;
+  if (chrome.runtime?.getContexts) {
+    try {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [chrome.runtime.getURL('engine/host.html')],
+      });
+      if (Array.isArray(contexts) && contexts.length > 0) return true;
+    } catch (_) {}
+  }
+  if (chrome.offscreen?.hasDocument) {
+    try {
+      return Boolean(await chrome.offscreen.hasDocument());
+    } catch (_) {}
+  }
+  return false;
+}
+
+function withOffscreenLock(task) {
+  const next = offscreenLifecycleLock.then(task, task);
+  offscreenLifecycleLock = next.catch(() => {});
+  return next;
+}
+
+function ensureLocalStockfishOffscreen() {
+  return withOffscreenLock(async () => {
+    if (typeof chrome === 'undefined' || !chrome.offscreen?.createDocument) {
+      const err = new Error('chrome.offscreen is unavailable in this browser.');
+      err.fallbackIframe = true;
+      throw err;
+    }
+    if (offscreenHostPort) return true;
+
+    const exists = await hasExistingOffscreenHost();
+    if (!exists) {
+      offscreenHostReady = false;
+      offscreenHostError = '';
+      const reason = chrome.offscreen?.Reason?.WORKERS || 'WORKERS';
+      try {
+        await chrome.offscreen.createDocument({
+          url: 'engine/host.html',
+          reasons: [reason],
+          justification: 'Run local Stockfish 19 WebAssembly engine worker cleanly outside third-party page iframes.',
+        });
+      } catch (err) {
+        const wrapped = err instanceof Error ? err : new Error(String(err || 'Failed to create offscreen host'));
+        wrapped.fallbackIframe = true;
+        throw wrapped;
+      }
+    }
+    return true;
+  });
+}
+
+function closeLocalStockfishOffscreenIfUnused(closingPort) {
+  return withOffscreenLock(async () => {
+    if (activeStockfishClientPort && activeStockfishClientPort !== closingPort) return;
+    if (chrome.offscreen?.closeDocument) {
+      const exists = await hasExistingOffscreenHost();
+      if (exists) {
+        try { await chrome.offscreen.closeDocument(); } catch (_) {}
+      }
+    }
+  });
+}
+
+function sendToStockfishClient(payload) {
+  if (!activeStockfishClientPort) return;
+  try {
+    activeStockfishClientPort.postMessage(payload);
+  } catch (_) {
+    activeStockfishClientPort = null;
+  }
+}
+
+function sendToStockfishHost(payload) {
+  if (offscreenHostPort) {
+    try {
+      offscreenHostPort.postMessage(payload);
+      return;
+    } catch (_) {
+      offscreenHostPort = null;
+    }
+  }
+  pendingStockfishHostMessages.push(payload);
+}
+
 // Long-lived port connection for progressive SSE depth snapshots (D5 -> D10 -> D15)
+// plus local Stockfish offscreen host <-> content-script relay.
 chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'local-stockfish-host') {
+    offscreenHostPort = port;
+    offscreenClosingIntentionally = false;
+
+    const queued = pendingStockfishHostMessages.splice(0, pendingStockfishHostMessages.length);
+    for (const item of queued) {
+      try { port.postMessage(item); } catch (_) {}
+    }
+
+    port.onMessage.addListener((msg) => {
+      if (!msg || msg.channel !== LOCAL_STOCKFISH_CHANNEL) return;
+      if (msg.type === 'ready') {
+        offscreenHostReady = true;
+        offscreenHostError = '';
+      } else if (msg.type === 'error') {
+        offscreenHostReady = false;
+        offscreenHostError = msg.message || 'Local Stockfish worker error.';
+      } else if (msg.type === 'terminated') {
+        offscreenHostReady = false;
+      }
+      sendToStockfishClient(msg);
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (offscreenHostPort === port) offscreenHostPort = null;
+      const wasReady = offscreenHostReady;
+      offscreenHostReady = false;
+      pendingStockfishHostMessages = [];
+      if (!offscreenClosingIntentionally && wasReady && activeStockfishClientPort) {
+        sendToStockfishClient({
+          channel: LOCAL_STOCKFISH_CHANNEL,
+          type: 'error',
+          message: 'Background Stockfish worker closed unexpectedly. Click Find or retry to restart.',
+        });
+      }
+      offscreenClosingIntentionally = false;
+    });
+    return;
+  }
+
+  if (port.name === 'local-stockfish-client') {
+    activeStockfishClientPort = port;
+    let clientDisconnected = false;
+
+    port.onDisconnect.addListener(() => {
+      clientDisconnected = true;
+      if (activeStockfishClientPort === port) activeStockfishClientPort = null;
+    });
+
+    port.onMessage.addListener(async (msg) => {
+      if (!msg || msg.channel !== LOCAL_STOCKFISH_CHANNEL) return;
+      if (msg.type === 'terminate') {
+        pendingStockfishHostMessages = [];
+        if (offscreenHostPort) {
+          offscreenClosingIntentionally = true;
+          try { offscreenHostPort.postMessage(msg); } catch (_) {}
+        }
+        offscreenHostReady = false;
+        offscreenHostError = '';
+        await closeLocalStockfishOffscreenIfUnused(port);
+        return;
+      }
+
+      if (msg.type === 'restart') {
+        offscreenHostReady = false;
+        offscreenHostError = '';
+        try {
+          await ensureLocalStockfishOffscreen();
+          if (clientDisconnected) return;
+          sendToStockfishHost({ channel: LOCAL_STOCKFISH_CHANNEL, type: 'restart' });
+        } catch (err) {
+          if (!clientDisconnected) {
+            try {
+              port.postMessage({
+                channel: LOCAL_STOCKFISH_CHANNEL,
+                type: 'error',
+                fallbackIframe: Boolean(err?.fallbackIframe),
+                message: err?.message || 'Unable to start offscreen Stockfish host.',
+              });
+            } catch (_) {}
+          }
+        }
+        return;
+      }
+
+      sendToStockfishHost(msg);
+    });
+
+    ensureLocalStockfishOffscreen()
+      .then(() => {
+        if (clientDisconnected || activeStockfishClientPort !== port) return;
+        if (offscreenHostPort && offscreenHostReady) {
+          port.postMessage({ channel: LOCAL_STOCKFISH_CHANNEL, type: 'ready' });
+        } else if (offscreenHostPort && offscreenHostError) {
+          // Automatically retry a fresh worker start when a client explicitly reconnects after an earlier failure.
+          offscreenHostError = '';
+          sendToStockfishHost({ channel: LOCAL_STOCKFISH_CHANNEL, type: 'restart' });
+        }
+      })
+      .catch((err) => {
+        if (clientDisconnected) return;
+        try {
+          port.postMessage({
+            channel: LOCAL_STOCKFISH_CHANNEL,
+            type: 'error',
+            fallbackIframe: Boolean(err?.fallbackIframe),
+            message: err?.message || 'Unable to initialize offscreen Stockfish host.',
+          });
+        } catch (_) {}
+      });
+    return;
+  }
+
   if (port.name !== 'mujahi-analysis-stream') return;
 
   let activeController = null;

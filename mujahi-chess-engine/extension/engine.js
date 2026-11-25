@@ -65,6 +65,7 @@ const LOCAL_ENGINE_CHANNEL = 'chess-helper-local-stockfish-v1';
 const LOCAL_ENGINE_HOST_PATH = 'engine/host.html';
 const LOCAL_ENGINE_WORKER_PATH = 'engine/stockfish-19-lite-single.js';
 let localEngineFrame = null;
+let localEnginePort = null;
 let localEngineHostPromise = null;
 let localEngineHostResolve = null;
 let localEngineHostReject = null;
@@ -72,6 +73,7 @@ let localEngineHostTimer = null;
 let localEngineHostReady = false;
 let localEngineUciPromise = null;
 let localEngineFailure = null;
+let localEngineSuppressModal = false;
 let hasShownLocalEngineError = false;
 let localEngineActiveSearch = null;
 let localEngineSearchQueue = [];
@@ -171,8 +173,13 @@ function getLocalEngineOrigin() {
     return new URL(chrome.runtime.getURL('/')).origin;
 }
 function localEnginePost(message) {
+    const payload = { channel: LOCAL_ENGINE_CHANNEL, ...message };
+    if (localEnginePort) {
+        localEnginePort.postMessage(payload);
+        return;
+    }
     if (!localEngineFrame?.contentWindow) throw new Error('Local Stockfish host is not available.');
-    localEngineFrame.contentWindow.postMessage({ channel: LOCAL_ENGINE_CHANNEL, ...message }, getLocalEngineOrigin());
+    localEngineFrame.contentWindow.postMessage(payload, getLocalEngineOrigin());
 }
 function localEngineAbortError() {
     const error = new Error('Local engine analysis was cancelled.');
@@ -198,7 +205,11 @@ function rejectLocalEngineLineWaiters(error) {
     for (const listener of [...localEngineLineListeners]) listener('', error);
 }
 function failLocalEngine(error) {
-    localEngineFailure = error instanceof Error ? error : new Error(String(error || 'Unknown local engine error'));
+    const incoming = error instanceof Error ? error : new Error(String(error || 'Unknown local engine error'));
+    const isGenericNotRunning = /Stockfish worker is not running/i.test(incoming.message);
+    if (!localEngineFailure || !isGenericNotRunning) {
+        localEngineFailure = incoming;
+    }
     if (localEngineHostTimer) { clearTimeout(localEngineHostTimer); localEngineHostTimer = null; }
     if (localEngineHostReject) {
         const reject = localEngineHostReject;
@@ -208,17 +219,32 @@ function failLocalEngine(error) {
     rejectLocalEngineLineWaiters(localEngineFailure);
     if (localEngineActiveSearch) finishLocalWasmSearch(localEngineActiveSearch, null, localEngineFailure);
     log(`Local Stockfish error: ${localEngineFailure.message}`);
-    if (!hasShownLocalEngineError && window.showCustomModal) {
+    if (getEngineProvider() === 'wasm' && !localEngineSuppressModal && !hasShownLocalEngineError && window.showCustomModal) {
         hasShownLocalEngineError = true;
         window.showCustomModal('Local Stockfish unavailable', `${localEngineFailure.message} Check the two Stockfish 19 Lite files in the extension/engine folder, or switch back to Hosted API in Settings.`);
     }
 }
-function handleLocalEngineHostMessage(event) {
-    if (!localEngineFrame || event.source !== localEngineFrame.contentWindow) return;
-    let extensionOrigin;
-    try { extensionOrigin = getLocalEngineOrigin(); } catch (_) { return; }
-    if (event.origin !== extensionOrigin) return;
-    const data = event.data;
+function startIframeLocalEngineHost() {
+    if (localEnginePort) {
+        try { localEnginePort.disconnect(); } catch (_) {}
+        localEnginePort = null;
+    }
+    if (localEngineFrame) {
+        localEngineFrame.remove();
+        localEngineFrame = null;
+    }
+    const frame = document.createElement('iframe');
+    frame.title = 'Chess Helper local Stockfish worker host';
+    frame.setAttribute('aria-hidden', 'true');
+    frame.tabIndex = -1;
+    frame.style.cssText = 'position:fixed!important;width:1px!important;height:1px!important;left:-10000px!important;top:-10000px!important;border:0!important;opacity:0!important;pointer-events:none!important;';
+    frame.src = chrome.runtime.getURL(LOCAL_ENGINE_HOST_PATH);
+    localEngineFrame = frame;
+    if (localEngineHostTimer) clearTimeout(localEngineHostTimer);
+    localEngineHostTimer = setTimeout(() => failLocalEngine(new Error(`Could not load ${LOCAL_ENGINE_HOST_PATH}. Check that the engine host files are present in the extension package.`)), 20000);
+    (document.documentElement || document.body).appendChild(frame);
+}
+function processLocalEngineHostPayload(data) {
     if (!data || data.channel !== LOCAL_ENGINE_CHANNEL) return;
     if (data.type === 'ready') {
         localEngineHostReady = true;
@@ -232,6 +258,10 @@ function handleLocalEngineHostMessage(event) {
         return;
     }
     if (data.type === 'error') {
+        if (data.fallbackIframe && localEnginePort && !localEngineHostReady) {
+            startIframeLocalEngineHost();
+            return;
+        }
         failLocalEngine(new Error(data.message || 'Stockfish Web Worker failed to start.'));
         return;
     }
@@ -242,26 +272,59 @@ function handleLocalEngineHostMessage(event) {
         if (localEngineActiveSearch) handleLocalWasmLine(localEngineActiveSearch, line);
     }
 }
+function handleLocalEngineHostMessage(event) {
+    if (!localEngineFrame || event.source !== localEngineFrame.contentWindow) return;
+    let extensionOrigin;
+    try { extensionOrigin = getLocalEngineOrigin(); } catch (_) { return; }
+    if (event.origin !== extensionOrigin) return;
+    processLocalEngineHostPayload(event.data);
+}
 window.addEventListener('message', handleLocalEngineHostMessage);
 
 function ensureLocalEngineHost() {
     if (localEngineFailure) return Promise.reject(localEngineFailure);
-    if (localEngineHostReady && localEngineFrame?.isConnected) return Promise.resolve(true);
+    if (localEngineHostReady && (localEnginePort || localEngineFrame?.isConnected)) return Promise.resolve(true);
     if (localEngineHostPromise) return localEngineHostPromise;
     if (typeof chrome === 'undefined' || !chrome.runtime?.getURL) return Promise.reject(new Error('This browser does not expose the extension runtime required by local WASM mode.'));
 
     localEngineHostPromise = new Promise((resolve, reject) => {
         localEngineHostResolve = resolve;
         localEngineHostReject = reject;
-        const frame = document.createElement('iframe');
-        frame.title = 'Chess Helper local Stockfish worker host';
-        frame.setAttribute('aria-hidden', 'true');
-        frame.tabIndex = -1;
-        frame.style.cssText = 'position:fixed!important;width:1px!important;height:1px!important;left:-10000px!important;top:-10000px!important;border:0!important;opacity:0!important;pointer-events:none!important;';
-        frame.src = chrome.runtime.getURL(LOCAL_ENGINE_HOST_PATH);
-        localEngineFrame = frame;
         localEngineHostTimer = setTimeout(() => failLocalEngine(new Error(`Could not load ${LOCAL_ENGINE_HOST_PATH}. Check that the engine host files are present in the extension package.`)), 20000);
-        (document.documentElement || document.body).appendChild(frame);
+
+        if (typeof chrome.runtime?.connect === 'function') {
+            try {
+                const port = chrome.runtime.connect({ name: 'local-stockfish-client' });
+                localEnginePort = port;
+                port.onMessage.addListener((msg) => {
+                    if (localEnginePort !== port) return;
+                    processLocalEngineHostPayload(msg);
+                });
+                port.onDisconnect.addListener(() => {
+                    if (localEnginePort !== port) return;
+                    localEnginePort = null;
+                    const errMsg = chrome.runtime.lastError?.message || '';
+                    if (!localEngineHostReady && !localEngineFrame) {
+                        if (/context invalidated/i.test(errMsg)) {
+                            failLocalEngine(new Error('Extension was reloaded — refresh this Chess.com tab once.'));
+                        } else {
+                            startIframeLocalEngineHost();
+                        }
+                        return;
+                    }
+                    if (localEngineHostReady) {
+                        localEngineHostReady = false;
+                        localEngineUciPromise = null;
+                        failLocalEngine(new Error(errMsg || 'Stockfish background port disconnected. Click Find or retry to restart.'));
+                    }
+                });
+                return;
+            } catch (_) {
+                localEnginePort = null;
+            }
+        }
+
+        startIframeLocalEngineHost();
     }).catch(error => {
         localEngineHostPromise = null;
         throw error;
@@ -363,7 +426,7 @@ function extractLocalMultiPvLines(job) {
 }
 function restoreLocalMultiPvDefault() {
     try {
-        if (localEngineFrame?.contentWindow && localEngineHostReady) {
+        if ((localEnginePort || localEngineFrame?.contentWindow) && localEngineHostReady) {
             localEnginePost({ type: 'command', command: 'setoption name MultiPV value 1' });
         }
     } catch (_) {}
@@ -1187,6 +1250,19 @@ async function runLocalWasmSoftMistakes(fen, cfg, signal) {
     return { ...out, sourceLabel: 'SF19 Local' };
 }
 
+async function runLocalWasmSoftMistakesWithRetry(fen, cfg, signal) {
+    if (localEngineFailure) {
+        resetLocalEngineRuntime({ terminate: true, error: localEngineAbortError() });
+    }
+    const prevSuppress = localEngineSuppressModal;
+    localEngineSuppressModal = true;
+    try {
+        return await runLocalWasmSoftMistakes(fen, cfg, signal);
+    } finally {
+        localEngineSuppressModal = prevSuppress;
+    }
+}
+
 async function findSoftMistakes() {
     const cfg = getSoftMistakesConfig();
     if (!cfg.enabled) { refreshSoftMistakesCard(); return; }
@@ -1226,19 +1302,32 @@ async function findSoftMistakes() {
             } catch (apiErr) {
                 if (apiErr?.name === 'AbortError' || controller.signal.aborted) return;
                 // Fallback transparently to bundled Stockfish 19 Lite WASM if Render doesn't have the new route yet
-                result = await runLocalWasmSoftMistakes(fen, cfg, controller.signal);
+                try {
+                    result = await runLocalWasmSoftMistakesWithRetry(fen, cfg, controller.signal);
+                } catch (wasmErr) {
+                    if (wasmErr?.name === 'AbortError' || controller.signal.aborted) return;
+                    throw wasmErr;
+                }
             }
+        } else if (provider === 'wasm') {
+            result = await runLocalWasmSoftMistakesWithRetry(fen, cfg, controller.signal);
         } else {
             try {
-                result = await runLocalWasmSoftMistakes(fen, cfg, controller.signal);
+                result = await runLocalWasmSoftMistakesWithRetry(fen, cfg, controller.signal);
             } catch (wasmErr) {
                 if (wasmErr?.name === 'AbortError' || controller.signal.aborted) return;
-                const payload = await fetchMujahiSoftMistakes(fen, cfg, controller.signal);
-                result = {
-                    candidates: Array.isArray(payload?.candidates) ? payload.candidates : [],
-                    reason: payload?.reason || 'ok',
-                    sourceLabel: 'MUJAHI SF19'
-                };
+                try {
+                    const payload = await fetchMujahiSoftMistakes(fen, cfg, controller.signal);
+                    result = {
+                        candidates: Array.isArray(payload?.candidates) ? payload.candidates : [],
+                        reason: payload?.reason || 'ok',
+                        sourceLabel: 'MUJAHI SF19'
+                    };
+                } catch (apiErr) {
+                    if (apiErr?.name === 'AbortError' || controller.signal.aborted) return;
+                    // Preserve the clear Local WASM diagnostic when Hosted API fallback also lacks the route.
+                    throw wasmErr;
+                }
             }
         }
 
@@ -1347,14 +1436,24 @@ async function fetchEngineBestMove(fen, depth, signal = null) {
 }
 
 function resetLocalEngineRuntime({ terminate = true, error = localEngineAbortError() } = {}) {
-    if (terminate && localEngineFrame) {
+    if (terminate && (localEnginePort || localEngineFrame)) {
         try { localEnginePost({ type: 'terminate' }); } catch (_) {}
+    }
+    if (localEngineHostTimer) { clearTimeout(localEngineHostTimer); localEngineHostTimer = null; }
+    if (localEngineHostReject) {
+        const reject = localEngineHostReject;
+        localEngineHostResolve = localEngineHostReject = null;
+        reject(error);
     }
     if (localEngineActiveSearch) finishLocalWasmSearch(localEngineActiveSearch, null, error);
     for (const job of [...localEngineSearchQueue]) finishLocalWasmSearch(job, null, error);
     localEngineSearchQueue = [];
     localWasmSearches.clear();
     rejectLocalEngineLineWaiters(error);
+    if (localEnginePort) {
+        try { localEnginePort.disconnect(); } catch (_) {}
+        localEnginePort = null;
+    }
     localEngineFrame?.remove();
     localEngineFrame = null;
     localEngineHostReady = false;
