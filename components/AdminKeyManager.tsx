@@ -53,7 +53,6 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Generator state
   const [tier, setTier] = useState<KeyTier>('temporary');
   const [movesTotal, setMovesTotal] = useState('60');
   const [count, setCount] = useState('1');
@@ -61,7 +60,6 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
   const [creating, setCreating] = useState(false);
   const [newlyCreated, setNewlyCreated] = useState<LicenseKeyRecord[]>([]);
 
-  // Filter & UI state
   const [search, setSearch] = useState('');
   const [tierFilter, setTierFilter] = useState<'all' | KeyTier>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | KeyStatus>('all');
@@ -234,54 +232,55 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-lg border border-[#E5E7EB] bg-white p-4">
-          <div className="text-xs font-medium text-[#6B7280]">Total Keys</div>
-          <div className="mt-1 font-mono text-2xl font-bold text-[#111827]">{stats.total}</div>
+        <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-4">
+          <div className="text-xs font-medium text-[#A1A1AA]">Total Keys</div>
+          <div className="mt-1 font-mono text-2xl font-bold text-white">{stats.total}</div>
         </div>
-        <div className="rounded-lg border border-[#E5E7EB] bg-white p-4">
-          <div className="text-xs font-medium text-[#6B7280]">Active</div>
-          <div className="mt-1 font-mono text-2xl font-bold text-[#16A34A]">{stats.active}</div>
+        <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-4">
+          <div className="text-xs font-medium text-[#A1A1AA]">Active</div>
+          <div className="mt-1 font-mono text-2xl font-bold text-[#81B64C]">{stats.active}</div>
         </div>
-        <div className="rounded-lg border border-[#E5E7EB] bg-white p-4">
-          <div className="text-xs font-medium text-[#6B7280]">Premium</div>
-          <div className="mt-1 font-mono text-2xl font-bold text-[#14532D]">{stats.premium}</div>
+        <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-4">
+          <div className="text-xs font-medium text-[#A1A1AA]">Premium</div>
+          <div className="mt-1 font-mono text-2xl font-bold text-[#FFD700]">{stats.premium}</div>
         </div>
-        <div className="rounded-lg border border-[#E5E7EB] bg-white p-4">
-          <div className="text-xs font-medium text-[#6B7280]">Temporary</div>
-          <div className="mt-1 font-mono text-2xl font-bold text-[#111827]">{stats.temporary}</div>
+        <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-4">
+          <div className="text-xs font-medium text-[#A1A1AA]">Temporary</div>
+          <div className="mt-1 font-mono text-2xl font-bold text-[#A5C7FF]">{stats.temporary}</div>
         </div>
       </div>
 
-      <section className="rounded-xl border border-[#E5E7EB] bg-white p-5">
+      <section className="rounded-[20px] border border-white/10 bg-[#141417]/90 p-5 backdrop-blur-md">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2
-              className="text-base font-bold text-[#111827]"
+              className="text-base font-bold text-white"
               style={{ fontFamily: 'var(--font-display)' }}
             >
               Generate 8-Character M-Keys
             </h2>
-            <p className="text-xs text-[#6B7280]">
-              Every generated key is 8 uppercase characters starting with <code className="font-mono font-semibold text-[#14532D]">M</code>.
+            <p className="text-xs text-[#A1A1AA]">
+              Every generated key is 8 uppercase characters starting with{' '}
+              <code className="font-mono font-semibold text-[#81B64C]">M</code>.
             </p>
           </div>
           <button
             type="button"
             onClick={loadKeys}
-            className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-[#FAF9F6] px-3 text-xs font-medium text-[#374151] hover:border-[#14532D]"
+            className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs font-medium text-[#E4E4E7] hover:bg-white/10"
           >
             <RefreshCw className="h-3.5 w-3.5" />
             <span>Refresh</span>
           </button>
         </div>
 
-        <form onSubmit={handleGenerate} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[150px_130px_100px_1fr_auto]">
+        <form onSubmit={handleGenerate} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[160px_130px_100px_1fr_auto]">
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#4B5563]">Tier</label>
+            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Tier</label>
             <select
               value={tier}
               onChange={(e) => setTier(e.target.value as KeyTier)}
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 text-xs font-medium text-[#111827] focus:border-[#14532D] focus:outline-none"
+              className="h-9 w-full rounded-lg border border-white/10 bg-[#1C1C21] px-2.5 text-xs font-medium text-white focus:border-[#81B64C] focus:outline-none"
             >
               <option value="temporary">Temporary</option>
               <option value="premium">Premium (Unlimited)</option>
@@ -289,7 +288,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#4B5563]">Moves Allowance</label>
+            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Moves Allowance</label>
             <input
               type="number"
               min={1}
@@ -298,31 +297,31 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
               placeholder={tier === 'premium' ? 'Unlimited' : '60'}
               disabled={tier === 'premium'}
               onChange={(e) => setMovesTotal(e.target.value)}
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827] disabled:bg-[#F3F4F6] disabled:text-[#6B7280] focus:border-[#14532D] focus:outline-none"
+              className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white disabled:opacity-45 focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#4B5563]">Quantity</label>
+            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Quantity</label>
             <input
               type="number"
               min={1}
               max={25}
               value={count}
               onChange={(e) => setCount(e.target.value)}
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827] focus:border-[#14532D] focus:outline-none"
+              className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#4B5563]">Label / Note (Optional)</label>
+            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Label / Note (Optional)</label>
             <input
               type="text"
               maxLength={120}
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="e.g. Batch #4 or User name"
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 text-xs text-[#111827] placeholder-[#9CA3AF] focus:border-[#14532D] focus:outline-none"
+              className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white placeholder-[#71717A] focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
@@ -330,7 +329,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
             <button
               type="submit"
               disabled={creating}
-              className="inline-flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-md bg-[#14532D] px-4 text-xs font-semibold text-white transition-colors hover:bg-[#15803D] disabled:opacity-50 whitespace-nowrap"
+              className="inline-flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-[#81B64C] px-4 text-xs font-bold text-[#121212] shadow-[0_4px_15px_rgba(129,182,76,0.3)] transition-colors hover:bg-[#A3D160] disabled:opacity-50 whitespace-nowrap"
             >
               <Plus className="h-3.5 w-3.5" />
               <span>{creating ? 'Minting...' : 'Generate Key'}</span>
@@ -339,17 +338,17 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
         </form>
 
         {newlyCreated.length > 0 && (
-          <div className="mt-4 rounded-lg border border-[#15803D]/25 bg-[#ECFDF5] p-3.5">
+          <div className="mt-4 rounded-xl border border-[#81B64C]/30 bg-[#81B64C]/10 p-3.5">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-[#14532D]">
+              <span className="text-xs font-semibold text-[#A3D160]">
                 Newly Generated ({newlyCreated.length})
               </span>
               <button
                 type="button"
                 onClick={copyAllNew}
-                className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded border border-[#15803D]/30 bg-white px-2.5 text-xs font-medium text-[#14532D] hover:bg-[#F0FDF4]"
+                className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border border-white/15 bg-black/30 px-2.5 text-xs font-medium text-white hover:bg-black/50"
               >
-                {copiedBatch ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                {copiedBatch ? <Check className="h-3 w-3 text-[#81B64C]" /> : <Copy className="h-3 w-3" />}
                 <span>{copiedBatch ? 'Copied All' : 'Copy All'}</span>
               </button>
             </div>
@@ -359,13 +358,13 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
                   key={item.key}
                   type="button"
                   onClick={() => copySingle(item.key)}
-                  className="inline-flex cursor-pointer items-center gap-1.5 rounded border border-[#15803D]/25 bg-white px-2.5 py-1 font-mono text-xs font-semibold text-[#111827] hover:border-[#14532D]"
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-xs font-semibold text-white hover:border-[#81B64C]"
                 >
                   <span>{item.key}</span>
                   {copiedKey === item.key ? (
-                    <Check className="h-3 w-3 text-[#16A34A]" />
+                    <Check className="h-3 w-3 text-[#81B64C]" />
                   ) : (
-                    <Copy className="h-3 w-3 text-[#6B7280]" />
+                    <Copy className="h-3 w-3 text-[#A1A1AA]" />
                   )}
                 </button>
               ))}
@@ -374,22 +373,22 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
         )}
 
         {error && (
-          <div className="mt-4 rounded-md border border-[#DC2626]/30 bg-[#FEF2F2] px-3.5 py-2.5 text-xs text-[#B91C1C]">
+          <div className="mt-4 rounded-lg border border-[#F87171]/35 bg-[#F87171]/10 px-3.5 py-2.5 text-xs text-[#FECACA]">
             {error}
           </div>
         )}
       </section>
 
-      <section className="rounded-xl border border-[#E5E7EB] bg-white overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E7EB] px-5 py-3.5">
+      <section className="rounded-[20px] border border-white/10 bg-[#141417]/90 overflow-hidden backdrop-blur-md">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5">
           <div className="relative min-w-[220px] flex-1 max-w-sm">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9CA3AF]" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#71717A]" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search key or note..."
-              className="h-8 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] pl-8 pr-3 text-xs text-[#111827] placeholder-[#9CA3AF] focus:border-[#14532D] focus:outline-none"
+              className="h-8 w-full rounded-lg border border-white/10 bg-white/5 pl-8 pr-3 text-xs text-white placeholder-[#71717A] focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
@@ -398,7 +397,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
               value={tierFilter}
               onChange={(e) => setTierFilter(e.target.value as 'all' | KeyTier)}
               aria-label="Filter by tier"
-              className="h-8 rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 text-xs text-[#374151] focus:border-[#14532D] focus:outline-none"
+              className="h-8 rounded-lg border border-white/10 bg-[#1C1C21] px-2.5 text-xs text-white focus:border-[#81B64C] focus:outline-none"
             >
               <option value="all">All Tiers</option>
               <option value="temporary">Temporary</option>
@@ -408,7 +407,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as 'all' | KeyStatus)}
               aria-label="Filter by status"
-              className="h-8 rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 text-xs text-[#374151] focus:border-[#14532D] focus:outline-none"
+              className="h-8 rounded-lg border border-white/10 bg-[#1C1C21] px-2.5 text-xs text-white focus:border-[#81B64C] focus:outline-none"
             >
               <option value="all">All Statuses</option>
               <option value="active">Active</option>
@@ -420,17 +419,17 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
 
         {loading ? (
           <div className="space-y-2 p-5">
-            <div className="h-10 rounded bg-[#F3F4F6]" />
-            <div className="h-10 rounded bg-[#F3F4F6]" />
-            <div className="h-10 rounded bg-[#F3F4F6]" />
+            <div className="h-10 rounded-lg bg-white/5" />
+            <div className="h-10 rounded-lg bg-white/5" />
+            <div className="h-10 rounded-lg bg-white/5" />
           </div>
         ) : filteredKeys.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
-            <KeyRound className="h-7 w-7 text-[#9CA3AF]" />
-            <div className="text-sm font-semibold text-[#111827]">
+            <KeyRound className="h-7 w-7 text-[#71717A]" />
+            <div className="text-sm font-semibold text-white">
               {keys.length === 0 ? 'No license keys created yet' : 'No keys match your filters'}
             </div>
-            <p className="max-w-sm text-xs text-[#6B7280]">
+            <p className="max-w-sm text-xs text-[#A1A1AA]">
               {keys.length === 0
                 ? 'Use the generator above to mint an 8-character M-prefixed Temporary or Premium key.'
                 : 'Clear or adjust the search and status filters to view all keys.'}
@@ -439,7 +438,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-[#E5E7EB] bg-[#FAF9F6] font-mono uppercase text-[11px] text-[#6B7280]">
+              <thead className="border-b border-white/10 bg-black/25 font-mono uppercase text-[11px] text-[#A1A1AA]">
                 <tr>
                   <th className="px-4 py-2.5">Key</th>
                   <th className="px-4 py-2.5">Tier</th>
@@ -450,34 +449,38 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
                   <th className="px-4 py-2.5 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#E5E7EB]">
+              <tbody className="divide-y divide-white/[0.06]">
                 {filteredKeys.map((item) => {
                   const isBusy = busyKey === item.key;
                   return (
-                    <tr key={item.key} className="h-11 hover:bg-[#FAF9F6]">
+                    <tr key={item.key} className="h-11 hover:bg-white/[0.03]">
                       <td className="px-4 py-2">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm font-semibold text-[#111827]">
+                          <span className="font-mono text-sm font-semibold text-white">
                             {item.key}
                           </span>
                           <button
                             type="button"
                             onClick={() => copySingle(item.key)}
                             title="Copy key"
-                            className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded border border-[#E5E7EB] bg-white text-[#4B5563] hover:border-[#14532D] hover:text-[#14532D]"
+                            className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded border border-white/10 bg-white/5 text-[#A1A1AA] hover:border-[#81B64C] hover:text-white"
                           >
                             {copiedKey === item.key ? (
-                              <Check className="h-3 w-3 text-[#16A34A]" />
+                              <Check className="h-3 w-3 text-[#81B64C]" />
                             ) : (
                               <Copy className="h-3 w-3" />
                             )}
                           </button>
                         </div>
                       </td>
-                      <td className="px-4 py-2 font-medium text-[#374151]">
-                        {item.tier === 'premium' ? 'Premium' : 'Temporary'}
+                      <td className="px-4 py-2 font-medium text-[#E4E4E7]">
+                        {item.tier === 'premium' ? (
+                          <span className="text-[#FFD700]">Premium</span>
+                        ) : (
+                          'Temporary'
+                        )}
                       </td>
-                      <td className="px-4 py-2 text-right font-mono text-[#111827]">
+                      <td className="px-4 py-2 text-right font-mono text-white">
                         {item.tier === 'premium'
                           ? 'Unlimited'
                           : `${item.movesRemain ?? 0} / ${item.movesTotal ?? 60}`}
@@ -486,19 +489,19 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
                         <span
                           className={
                             item.status === 'active'
-                              ? 'text-[#16A34A]'
+                              ? 'text-[#4ADE80]'
                               : item.status === 'exhausted'
-                                ? 'text-[#D97706]'
-                                : 'text-[#DC2626]'
+                                ? 'text-[#F59E0B]'
+                                : 'text-[#F87171]'
                           }
                         >
                           {item.status.toUpperCase()}
                         </span>
                       </td>
-                      <td className="max-w-[180px] truncate px-4 py-2 text-[#4B5563]">
+                      <td className="max-w-[180px] truncate px-4 py-2 text-[#A1A1AA]">
                         {item.note || '—'}
                       </td>
-                      <td className="px-4 py-2 font-mono text-[#6B7280] whitespace-nowrap">
+                      <td className="px-4 py-2 font-mono text-[#A1A1AA] whitespace-nowrap">
                         {formatShortDate(item.lastUsedAt)}
                       </td>
                       <td className="px-4 py-2 text-right">
@@ -509,7 +512,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
                               disabled={isBusy}
                               onClick={() => handleUpdateKey(item.key, { resetMoves: true })}
                               title="Reset moves to initial allowance"
-                              className="inline-flex h-7 cursor-pointer items-center gap-1 rounded border border-[#D1D5DB] bg-white px-2 text-[11px] font-medium text-[#374151] hover:border-[#14532D] disabled:opacity-50"
+                              className="inline-flex h-7 cursor-pointer items-center gap-1 rounded border border-white/10 bg-white/5 px-2 text-[11px] font-medium text-[#E4E4E7] hover:border-[#81B64C] disabled:opacity-50"
                             >
                               <RotateCcw className="h-3 w-3" />
                               <span>Reset</span>
@@ -526,8 +529,8 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
                             }
                             className={`inline-flex h-7 cursor-pointer items-center gap-1 rounded border px-2 text-[11px] font-medium disabled:opacity-50 ${
                               item.status === 'revoked'
-                                ? 'border-[#16A34A]/40 bg-[#ECFDF5] text-[#14532D]'
-                                : 'border-[#D97706]/40 bg-[#FFFBEB] text-[#B45309]'
+                                ? 'border-[#81B64C]/40 bg-[#81B64C]/15 text-[#A3D160]'
+                                : 'border-[#F59E0B]/35 bg-[#F59E0B]/10 text-[#FDE68A]'
                             }`}
                           >
                             <Ban className="h-3 w-3" />
@@ -549,7 +552,7 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
                               disabled={isBusy}
                               onClick={() => setPendingDelete(item.key)}
                               title="Delete key"
-                              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-[#E5E7EB] bg-white text-[#6B7280] hover:border-[#DC2626] hover:text-[#DC2626]"
+                              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-white/10 bg-white/5 text-[#A1A1AA] hover:border-[#F87171] hover:text-[#F87171]"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>

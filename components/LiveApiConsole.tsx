@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Activity, Play, Square, Wifi } from 'lucide-react';
 
 const PRESET_FENS: { label: string; fen: string }[] = [
-  { label: 'Start', fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' },
+  { label: 'Start Position', fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' },
   {
     label: 'Sicilian',
     fen: 'r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3',
@@ -12,21 +12,6 @@ const PRESET_FENS: { label: string; fen: string }[] = [
   { label: 'KP Endgame', fen: '4k3/8/8/4P3/8/8/4K3/8 w - - 0 1' },
   { label: 'Back-Rank Mate', fen: '6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1' },
 ];
-
-const PIECE_UNICODE: Record<string, string> = {
-  K: '♔',
-  Q: '♕',
-  R: '♖',
-  B: '♗',
-  N: '♘',
-  P: '♙',
-  k: '♚',
-  q: '♛',
-  r: '♜',
-  b: '♝',
-  n: '♞',
-  p: '♟',
-};
 
 interface DepthSnapshot {
   depth: number;
@@ -37,36 +22,6 @@ interface DepthSnapshot {
   nodes?: number;
   nps?: number;
   timeMs?: number;
-}
-
-function parseBoard(fen: string): string[][] | null {
-  const placement = fen.trim().split(/\s+/)[0] || '';
-  const ranks = placement.split('/');
-  if (ranks.length !== 8) return null;
-  const grid: string[][] = [];
-  for (const rank of ranks) {
-    const row: string[] = [];
-    for (const ch of rank) {
-      if (/[1-8]/.test(ch)) {
-        for (let i = 0; i < Number(ch); i++) row.push('');
-      } else if (PIECE_UNICODE[ch]) {
-        row.push(ch);
-      } else {
-        return null;
-      }
-    }
-    if (row.length !== 8) return null;
-    grid.push(row);
-  }
-  return grid;
-}
-
-function squareKey(coord: string | null | undefined): string | null {
-  if (!coord || coord.length < 2) return null;
-  const file = coord.charCodeAt(0) - 97;
-  const rank = 8 - Number(coord[1]);
-  if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
-  return `${rank}-${file}`;
 }
 
 function formatEval(snap: DepthSnapshot | null): string {
@@ -106,10 +61,6 @@ export default function LiveApiConsole() {
     }
     return sessionIdRef.current;
   };
-
-  const board = useMemo(() => parseBoard(fen), [fen]);
-  const fromSq = squareKey(bestmove && bestmove !== '(none)' ? bestmove.slice(0, 2) : null);
-  const toSq = squareKey(bestmove && bestmove !== '(none)' ? bestmove.slice(2, 4) : null);
 
   const sortedDepths = useMemo(
     () =>
@@ -289,7 +240,7 @@ export default function LiveApiConsole() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
-      <div className="rounded-xl border border-[#E5E7EB] bg-white p-4 space-y-4">
+      <div className="rounded-[20px] border border-white/10 bg-[#141417]/90 p-5 space-y-4 self-start backdrop-blur-md">
         <div className="flex flex-wrap gap-2">
           <input
             type="url"
@@ -297,86 +248,53 @@ export default function LiveApiConsole() {
             onChange={(e) => setApiUrl(e.target.value)}
             placeholder="https://mujahi-chess.onrender.com"
             aria-label="Render API Base URL"
-            className="h-9 flex-1 rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827] focus:border-[#14532D] focus:outline-none"
+            className="h-9 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
           />
           <button
             type="button"
             onClick={handleHealthCheck}
-            className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 text-xs font-medium text-[#111827] hover:border-[#14532D]"
+            className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs font-medium text-white hover:border-[#81B64C]"
           >
-            <Wifi className="h-3.5 w-3.5 text-[#15803D]" />
+            <Wifi className="h-3.5 w-3.5 text-[#81B64C]" />
             <span>Probe /health</span>
           </button>
         </div>
 
-        <div className="grid grid-cols-8 aspect-square w-full overflow-hidden rounded-md border border-[#D1D5DB]">
-          {Array.from({ length: 8 }).map((_, r) =>
-            Array.from({ length: 8 }).map((__, f) => {
-              const isLight = (r + f) % 2 === 0;
-              const key = `${r}-${f}`;
-              const piece = board ? board[r][f] : '';
-              const highlight =
-                key === toSq
-                  ? 'ring-2 ring-inset ring-[#14532D] bg-[#86EFAC]/60'
-                  : key === fromSq
-                    ? 'ring-2 ring-inset ring-[#15803D] bg-[#BBF7D0]/55'
-                    : '';
-              return (
-                <div
-                  key={key}
-                  className={`flex items-center justify-center text-2xl sm:text-3xl select-none ${
-                    isLight ? 'bg-[#F3F1EA]' : 'bg-[#7A9A7E]'
-                  } ${highlight}`}
-                >
-                  {piece && (
-                    <span
-                      className={
-                        piece === piece.toUpperCase()
-                          ? 'text-white drop-shadow-[0_1px_2px_rgba(17,24,39,0.75)]'
-                          : 'text-[#111827]'
-                      }
-                    >
-                      {PIECE_UNICODE[piece]}
-                    </span>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          {PRESET_FENS.map((preset) => (
-            <button
-              key={preset.label}
-              type="button"
-              onClick={() => setFen(preset.fen)}
-              className="cursor-pointer rounded-md border border-[#E5E7EB] bg-[#FAF9F6] px-2.5 py-1 text-xs text-[#374151] hover:border-[#14532D] hover:text-[#14532D]"
-            >
-              {preset.label}
-            </button>
-          ))}
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium text-[#A1A1AA]">Preset Test Positions</div>
+          <div className="flex flex-wrap gap-1.5">
+            {PRESET_FENS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => setFen(preset.fen)}
+                className="cursor-pointer rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-[#E4E4E7] hover:border-[#81B64C] hover:text-white"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <form onSubmit={handleAnalyze} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#4B5563]">FEN String</label>
-            <input
-              type="text"
+            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">FEN String</label>
+            <textarea
+              rows={2}
               value={fen}
               onChange={(e) => setFen(e.target.value)}
               required
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827] focus:border-[#14532D] focus:outline-none"
+              className="w-full rounded-lg border border-white/10 bg-white/5 p-2.5 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#4B5563]">Depths</label>
+              <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Depths</label>
               <select
                 value={depthsStr}
                 onChange={(e) => setDepthsStr(e.target.value)}
-                className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 font-mono text-xs text-[#111827]"
+                className="h-9 w-full rounded-lg border border-white/10 bg-[#1C1C21] px-2.5 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
               >
                 <option value="5,10,15">5,10,15 (Multi)</option>
                 <option value="10">10 (Single)</option>
@@ -385,11 +303,11 @@ export default function LiveApiConsole() {
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#4B5563]">Transport</label>
+              <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Transport</label>
               <select
                 value={transport}
                 onChange={(e) => setTransport(e.target.value as 'stream' | 'json')}
-                className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 text-xs text-[#111827]"
+                className="h-9 w-full rounded-lg border border-white/10 bg-[#1C1C21] px-2.5 text-xs text-white focus:border-[#81B64C] focus:outline-none"
               >
                 <option value="stream">SSE Stream</option>
                 <option value="json">JSON POST</option>
@@ -398,7 +316,7 @@ export default function LiveApiConsole() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#4B5563]">Timeout (ms)</label>
+            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Timeout (ms)</label>
             <input
               type="number"
               min={1000}
@@ -406,15 +324,15 @@ export default function LiveApiConsole() {
               step={1000}
               value={timeoutMs}
               onChange={(e) => setTimeoutMs(e.target.value)}
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827]"
+              className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 pt-1">
             <button
               type="submit"
               disabled={running}
-              className="inline-flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md bg-[#14532D] px-4 text-xs font-semibold text-white hover:bg-[#15803D] disabled:opacity-50"
+              className="inline-flex h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#81B64C] px-4 text-xs font-bold text-[#121212] hover:bg-[#A3D160] disabled:opacity-50"
             >
               <Play className="h-3.5 w-3.5" />
               <span>{running ? 'Analyzing...' : 'Analyze Position'}</span>
@@ -423,7 +341,7 @@ export default function LiveApiConsole() {
               type="button"
               onClick={handleCancel}
               disabled={!running}
-              className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#DC2626]/30 bg-[#FEF2F2] px-3 text-xs font-medium text-[#B91C1C] disabled:opacity-40"
+              className="inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-xl border border-[#F87171]/35 bg-[#F87171]/10 px-3 text-xs font-medium text-[#FCA5A5] disabled:opacity-40"
             >
               <Square className="h-3.5 w-3.5" />
               <span>Stop</span>
@@ -434,45 +352,45 @@ export default function LiveApiConsole() {
 
       <div className="space-y-4">
         <div
-          className={`rounded-lg border px-4 py-3 text-xs ${
+          className={`rounded-xl border px-4 py-3 text-xs ${
             statusTone === 'ok'
-              ? 'border-[#15803D]/30 bg-[#ECFDF5] text-[#14532D]'
+              ? 'border-[#81B64C]/35 bg-[#81B64C]/15 text-[#A3D160]'
               : statusTone === 'error'
-                ? 'border-[#DC2626]/30 bg-[#FEF2F2] text-[#B91C1C]'
-                : 'border-[#E5E7EB] bg-white text-[#4B5563]'
+                ? 'border-[#F87171]/35 bg-[#F87171]/10 text-[#FECACA]'
+                : 'border-white/10 bg-[#141417]/85 text-[#A1A1AA]'
           }`}
         >
           {statusMessage}
         </div>
 
         <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-[#E5E7EB] bg-white p-3.5">
-            <div className="text-xs text-[#6B7280]">Best Move</div>
-            <div className="mt-1 font-mono text-lg font-bold text-[#111827]">
+          <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-3.5">
+            <div className="text-xs text-[#A1A1AA]">Best Move</div>
+            <div className="mt-1 font-mono text-lg font-bold text-white">
               {bestmove || '—'}
             </div>
           </div>
-          <div className="rounded-xl border border-[#E5E7EB] bg-white p-3.5">
-            <div className="text-xs text-[#6B7280]">Eval (White POV)</div>
-            <div className="mt-1 font-mono text-lg font-bold text-[#14532D]">
+          <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-3.5">
+            <div className="text-xs text-[#A1A1AA]">Eval (White POV)</div>
+            <div className="mt-1 font-mono text-lg font-bold text-[#81B64C]">
               {formatEval(highestSnap)}
             </div>
           </div>
-          <div className="rounded-xl border border-[#E5E7EB] bg-white p-3.5">
-            <div className="text-xs text-[#6B7280]">Latency</div>
-            <div className="mt-1 font-mono text-lg font-bold text-[#111827]">
+          <div className="rounded-xl border border-white/10 bg-[#141417]/85 p-3.5">
+            <div className="text-xs text-[#A1A1AA]">Latency</div>
+            <div className="mt-1 font-mono text-lg font-bold text-white">
               {latencyMs !== null ? `${latencyMs} ms` : '—'}
             </div>
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#E5E7EB] bg-white p-4">
-          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#111827]">
-            <Activity className="h-4 w-4 text-[#14532D]" />
+        <div className="rounded-[20px] border border-white/10 bg-[#141417]/90 p-4 backdrop-blur-md">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+            <Activity className="h-4 w-4 text-[#81B64C]" />
             <span>Progressive Depth Snapshots</span>
           </div>
           {sortedDepths.length === 0 ? (
-            <div className="rounded-md border border-[#E5E7EB] bg-[#FAF9F6] p-3 text-xs text-[#6B7280]">
+            <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-[#A1A1AA]">
               Snapshots from your Render Stockfish 19 container will stream here.
             </div>
           ) : (
@@ -482,19 +400,19 @@ export default function LiveApiConsole() {
                 return (
                   <div
                     key={d}
-                    className="rounded-md border border-[#E5E7EB] bg-[#FAF9F6] p-3 text-xs"
+                    className="rounded-xl border border-white/10 bg-black/30 p-3 text-xs"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-mono font-semibold text-[#14532D]">Depth {d}</span>
-                      <span className="font-mono text-[#111827]">
+                      <span className="font-mono font-semibold text-[#81B64C]">Depth {d}</span>
+                      <span className="font-mono text-white">
                         {s.bestmove} · {formatEval(s)}
                       </span>
-                      <span className="font-mono text-[#6B7280]">
+                      <span className="font-mono text-[#A1A1AA]">
                         {s.nps ? `${s.nps.toLocaleString()} nps` : ''}
                       </span>
                     </div>
                     {s.continuation && (
-                      <div className="mt-1.5 font-mono text-[11px] text-[#4B5563]">
+                      <div className="mt-1.5 font-mono text-[11px] text-[#A1A1AA]">
                         PV: {s.continuation}
                       </div>
                     )}
@@ -505,11 +423,11 @@ export default function LiveApiConsole() {
           )}
         </div>
 
-        <div className="rounded-xl border border-[#E5E7EB] bg-white p-4">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#6B7280]">
+        <div className="rounded-[20px] border border-white/10 bg-[#141417]/90 p-4 backdrop-blur-md">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#A1A1AA]">
             Raw JSON Payload
           </div>
-          <pre className="max-h-56 overflow-auto rounded-md border border-[#E5E7EB] bg-[#FAF9F6] p-3 font-mono text-xs text-[#1F2937]">
+          <pre className="max-h-56 overflow-auto rounded-xl border border-white/10 bg-black/35 p-3 font-mono text-xs text-[#E4E4E7]">
             {rawJson}
           </pre>
         </div>

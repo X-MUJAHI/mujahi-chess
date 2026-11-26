@@ -4,18 +4,18 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Mujahi Chess — Browser Chess Analysis Extension',
   description:
-    'Clean, adaptive browser chess analysis with live board overlays, subtle human-style move suggestions, and fast desktop or mobile installation.',
+    'Clean, adaptive browser chess analysis with floating panel controls, subtle human-style move suggestions, and fast desktop or mobile installation.',
   openGraph: {
     title: 'Mujahi Chess — Browser Chess Analysis Extension',
     description:
-      'Clean, adaptive browser chess analysis with live board overlays, subtle human-style move suggestions, and fast desktop or mobile installation.',
+      'Clean, adaptive browser chess analysis with floating panel controls, subtle human-style move suggestions, and fast desktop or mobile installation.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Mujahi Chess — Browser Chess Analysis Extension',
     description:
-      'Clean, adaptive browser chess analysis with live board overlays, subtle human-style move suggestions, and fast desktop or mobile installation.',
+      'Clean, adaptive browser chess analysis with floating panel controls, subtle human-style move suggestions, and fast desktop or mobile installation.',
   },
 };
 
@@ -30,7 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-screen antialiased bg-[#FAF9F6] text-[#111827]" suppressHydrationWarning>
+      <body className="min-h-screen antialiased bg-[#0C0C0F] text-white" suppressHydrationWarning>
         {children}
       </body>
     </html>

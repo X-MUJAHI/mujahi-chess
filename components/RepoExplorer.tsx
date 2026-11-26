@@ -107,24 +107,24 @@ export default function RepoExplorer({
 
   return (
     <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
-      <aside className="flex flex-col rounded-xl border border-[#E5E7EB] bg-white overflow-hidden">
-        <div className="border-b border-[#E5E7EB] p-4 space-y-3">
+      <aside className="flex flex-col rounded-[20px] border border-white/10 bg-[#141417]/90 overflow-hidden backdrop-blur-md">
+        <div className="border-b border-white/10 p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#111827]">
-              <FolderTree className="h-4 w-4 text-[#14532D]" />
+            <div className="flex items-center gap-2 text-sm font-semibold text-white">
+              <FolderTree className="h-4 w-4 text-[#81B64C]" />
               <span>mujahi-chess-engine/</span>
             </div>
-            <span className="font-mono text-xs text-[#6B7280]">{filteredFiles.length} files</span>
+            <span className="font-mono text-xs text-[#A1A1AA]">{filteredFiles.length} files</span>
           </div>
 
           <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9CA3AF]" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#71717A]" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Filter path (e.g. analyze, sse, doc)"
-              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] pl-8 pr-3 text-xs text-[#111827] placeholder-[#9CA3AF] focus:border-[#14532D] focus:outline-none"
+              className="h-9 w-full rounded-lg border border-white/10 bg-white/5 pl-8 pr-3 text-xs text-white placeholder-[#71717A] focus:border-[#81B64C] focus:outline-none"
             />
           </div>
 
@@ -132,7 +132,7 @@ export default function RepoExplorer({
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
             aria-label="Filter by component category"
-            className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 text-xs text-[#111827] focus:border-[#14532D] focus:outline-none"
+            className="h-9 w-full rounded-lg border border-white/10 bg-[#1C1C21] px-2.5 text-xs text-white focus:border-[#81B64C] focus:outline-none"
           >
             {categories.map((cat) => (
               <option key={cat} value={cat}>
@@ -144,10 +144,10 @@ export default function RepoExplorer({
 
         <div className="max-h-[540px] overflow-y-auto p-2 space-y-0.5">
           {loadingList && (
-            <div className="p-3 text-xs text-[#6B7280]">Indexing repository files...</div>
+            <div className="p-3 text-xs text-[#A1A1AA]">Indexing repository files...</div>
           )}
           {listError && (
-            <div className="rounded-md border border-[#DC2626]/30 bg-[#FEF2F2] p-3 text-xs text-[#B91C1C]">
+            <div className="rounded-lg border border-[#F87171]/35 bg-[#F87171]/10 p-3 text-xs text-[#FECACA]">
               {listError}
             </div>
           )}
@@ -160,17 +160,17 @@ export default function RepoExplorer({
                   key={file.path}
                   type="button"
                   onClick={() => setSelectedPath(file.path)}
-                  className={`flex w-full cursor-pointer items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors ${
+                  className={`flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
                     isSelected
-                      ? 'bg-[#ECFDF5] font-medium text-[#14532D]'
-                      : 'text-[#374151] hover:bg-[#FAF9F6]'
+                      ? 'bg-[#81B64C]/20 font-medium text-[#A3D160]'
+                      : 'text-[#E4E4E7] hover:bg-white/5'
                   }`}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <FileCode2 className="h-3.5 w-3.5 shrink-0 opacity-75" />
                     <span className="truncate font-mono">{file.path}</span>
                   </span>
-                  <span className="shrink-0 font-mono text-[11px] text-[#9CA3AF]">
+                  <span className="shrink-0 font-mono text-[11px] text-[#71717A]">
                     {formatBytes(file.sizeBytes)}
                   </span>
                 </button>
@@ -179,14 +179,14 @@ export default function RepoExplorer({
         </div>
       </aside>
 
-      <section className="flex flex-col rounded-xl border border-[#E5E7EB] bg-white overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E7EB] bg-[#FAF9F6] px-4 py-3">
+      <section className="flex flex-col rounded-[20px] border border-white/10 bg-[#141417]/90 overflow-hidden backdrop-blur-md">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/25 px-4 py-3">
           <div className="min-w-0">
-            <div className="truncate font-mono text-xs sm:text-sm font-semibold text-[#111827]">
+            <div className="truncate font-mono text-xs sm:text-sm font-semibold text-white">
               {selectedPath}
             </div>
             {fileMeta && (
-              <div className="mt-0.5 font-mono text-[11px] text-[#6B7280]">
+              <div className="mt-0.5 font-mono text-[11px] text-[#A1A1AA]">
                 {fileMeta.category} · {formatBytes(fileMeta.sizeBytes)}
               </div>
             )}
@@ -197,16 +197,16 @@ export default function RepoExplorer({
               type="button"
               onClick={handleCopy}
               disabled={!fileContent}
-              className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-[#D1D5DB] bg-white px-3 text-xs font-medium text-[#111827] hover:border-[#14532D] disabled:opacity-50"
+              className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs font-medium text-white hover:border-[#81B64C] disabled:opacity-50"
             >
-              {copied ? <Check className="h-3.5 w-3.5 text-[#16A34A]" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? <Check className="h-3.5 w-3.5 text-[#81B64C]" /> : <Copy className="h-3.5 w-3.5" />}
               <span>{copied ? 'Copied' : 'Copy'}</span>
             </button>
             <button
               type="button"
               onClick={handleDownloadFile}
               disabled={!fileContent}
-              className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-[#D1D5DB] bg-white px-3 text-xs font-medium text-[#111827] hover:border-[#14532D] disabled:opacity-50"
+              className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs font-medium text-white hover:border-[#81B64C] disabled:opacity-50"
             >
               <Download className="h-3.5 w-3.5" />
               <span>Download</span>
@@ -214,15 +214,15 @@ export default function RepoExplorer({
           </div>
         </div>
 
-        <div className="max-h-[600px] overflow-auto bg-[#FAF9F6] p-4">
+        <div className="max-h-[600px] overflow-auto bg-black/35 p-4">
           {loadingFile ? (
-            <div className="font-mono text-xs text-[#6B7280]">Loading source file...</div>
+            <div className="font-mono text-xs text-[#A1A1AA]">Loading source file...</div>
           ) : fileError ? (
-            <div className="rounded-md border border-[#DC2626]/30 bg-[#FEF2F2] p-3 text-xs text-[#B91C1C]">
+            <div className="rounded-lg border border-[#F87171]/35 bg-[#F87171]/10 p-3 text-xs text-[#FECACA]">
               {fileError}
             </div>
           ) : (
-            <pre className="font-mono text-xs leading-relaxed text-[#1F2937] whitespace-pre">
+            <pre className="font-mono text-xs leading-relaxed text-[#E4E4E7] whitespace-pre">
               {fileContent}
             </pre>
           )}
