@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
+import { isAdminRequest } from '@/lib/admin-auth';
 
 const REPO_ROOT = path.resolve(process.cwd(), 'mujahi-chess-engine');
 const IGNORED_DIRS = new Set(['node_modules', '.git', '.next', 'dist']);
@@ -45,6 +46,10 @@ async function collectFiles(dir: string, acc: RepoFileEntry[] = []): Promise<Rep
 }
 
 export async function GET(req: NextRequest) {
+  if (!isAdminRequest(req)) {
+    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+  }
+
   const fileParam = req.nextUrl.searchParams.get('file');
 
   try {

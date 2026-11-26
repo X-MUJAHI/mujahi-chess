@@ -89,7 +89,7 @@ export default function LiveApiConsole() {
 
   const [running, setRunning] = useState(false);
   const [statusMessage, setStatusMessage] = useState(
-    'Enter your deployed Render service URL above to test /health, /v1/analyze, or /v1/analyze/stream live.'
+    'Enter your deployed Render service URL above to test /health, /v1/analyze, or /v1/analyze/stream.'
   );
   const [statusTone, setStatusTone] = useState<'neutral' | 'ok' | 'error'>('neutral');
   const [snapshots, setSnapshots] = useState<Record<string, DepthSnapshot>>({});
@@ -102,7 +102,7 @@ export default function LiveApiConsole() {
 
   const getSessionId = () => {
     if (!sessionIdRef.current) {
-      sessionIdRef.current = `preview_${Date.now().toString(36)}`;
+      sessionIdRef.current = `admin_${Date.now().toString(36)}`;
     }
     return sessionIdRef.current;
   };
@@ -289,7 +289,7 @@ export default function LiveApiConsole() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
-      <div className="rounded-xl border border-[#24303F] bg-[#131920] p-4 space-y-4">
+      <div className="rounded-xl border border-[#E5E7EB] bg-white p-4 space-y-4">
         <div className="flex flex-wrap gap-2">
           <input
             type="url"
@@ -297,19 +297,19 @@ export default function LiveApiConsole() {
             onChange={(e) => setApiUrl(e.target.value)}
             placeholder="https://mujahi-chess.onrender.com"
             aria-label="Render API Base URL"
-            className="h-9 flex-1 rounded-md border border-[#324256] bg-[#080B0F] px-3 font-mono text-xs text-[#F1F5F9] focus:border-[#22C55E] focus:outline-none"
+            className="h-9 flex-1 rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827] focus:border-[#14532D] focus:outline-none"
           />
           <button
             type="button"
             onClick={handleHealthCheck}
-            className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#324256] bg-[#19212B] px-3 text-xs font-medium text-[#F1F5F9] hover:border-[#64748B]"
+            className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 text-xs font-medium text-[#111827] hover:border-[#14532D]"
           >
-            <Wifi className="h-3.5 w-3.5 text-[#4ADE80]" />
+            <Wifi className="h-3.5 w-3.5 text-[#15803D]" />
             <span>Probe /health</span>
           </button>
         </div>
 
-        <div className="grid grid-cols-8 aspect-square w-full overflow-hidden rounded-md border border-[#324256]">
+        <div className="grid grid-cols-8 aspect-square w-full overflow-hidden rounded-md border border-[#D1D5DB]">
           {Array.from({ length: 8 }).map((_, r) =>
             Array.from({ length: 8 }).map((__, f) => {
               const isLight = (r + f) % 2 === 0;
@@ -317,23 +317,23 @@ export default function LiveApiConsole() {
               const piece = board ? board[r][f] : '';
               const highlight =
                 key === toSq
-                  ? 'ring-2 ring-inset ring-[#4ADE80] bg-[#22C55E]/35'
+                  ? 'ring-2 ring-inset ring-[#14532D] bg-[#86EFAC]/60'
                   : key === fromSq
-                    ? 'ring-2 ring-inset ring-[#22C55E] bg-[#22C55E]/20'
+                    ? 'ring-2 ring-inset ring-[#15803D] bg-[#BBF7D0]/55'
                     : '';
               return (
                 <div
                   key={key}
                   className={`flex items-center justify-center text-2xl sm:text-3xl select-none ${
-                    isLight ? 'bg-[#CBD5E1]' : 'bg-[#475569]'
+                    isLight ? 'bg-[#F3F1EA]' : 'bg-[#7A9A7E]'
                   } ${highlight}`}
                 >
                   {piece && (
                     <span
                       className={
                         piece === piece.toUpperCase()
-                          ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]'
-                          : 'text-[#0B0F14]'
+                          ? 'text-white drop-shadow-[0_1px_2px_rgba(17,24,39,0.75)]'
+                          : 'text-[#111827]'
                       }
                     >
                       {PIECE_UNICODE[piece]}
@@ -351,7 +351,7 @@ export default function LiveApiConsole() {
               key={preset.label}
               type="button"
               onClick={() => setFen(preset.fen)}
-              className="cursor-pointer rounded-md border border-[#324256] bg-[#0B0F14] px-2.5 py-1 text-xs text-[#CBD5E1] hover:border-[#22C55E] hover:text-white"
+              className="cursor-pointer rounded-md border border-[#E5E7EB] bg-[#FAF9F6] px-2.5 py-1 text-xs text-[#374151] hover:border-[#14532D] hover:text-[#14532D]"
             >
               {preset.label}
             </button>
@@ -360,23 +360,23 @@ export default function LiveApiConsole() {
 
         <form onSubmit={handleAnalyze} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#94A3B8]">FEN String</label>
+            <label className="mb-1 block text-xs font-medium text-[#4B5563]">FEN String</label>
             <input
               type="text"
               value={fen}
               onChange={(e) => setFen(e.target.value)}
               required
-              className="h-9 w-full rounded-md border border-[#324256] bg-[#080B0F] px-3 font-mono text-xs text-[#F1F5F9] focus:border-[#22C55E] focus:outline-none"
+              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827] focus:border-[#14532D] focus:outline-none"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#94A3B8]">Depths</label>
+              <label className="mb-1 block text-xs font-medium text-[#4B5563]">Depths</label>
               <select
                 value={depthsStr}
                 onChange={(e) => setDepthsStr(e.target.value)}
-                className="h-9 w-full rounded-md border border-[#324256] bg-[#080B0F] px-2.5 font-mono text-xs text-[#F1F5F9]"
+                className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 font-mono text-xs text-[#111827]"
               >
                 <option value="5,10,15">5,10,15 (Multi)</option>
                 <option value="10">10 (Single)</option>
@@ -385,11 +385,11 @@ export default function LiveApiConsole() {
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-[#94A3B8]">Transport</label>
+              <label className="mb-1 block text-xs font-medium text-[#4B5563]">Transport</label>
               <select
                 value={transport}
                 onChange={(e) => setTransport(e.target.value as 'stream' | 'json')}
-                className="h-9 w-full rounded-md border border-[#324256] bg-[#080B0F] px-2.5 text-xs text-[#F1F5F9]"
+                className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-2.5 text-xs text-[#111827]"
               >
                 <option value="stream">SSE Stream</option>
                 <option value="json">JSON POST</option>
@@ -398,7 +398,7 @@ export default function LiveApiConsole() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-[#94A3B8]">Timeout (ms)</label>
+            <label className="mb-1 block text-xs font-medium text-[#4B5563]">Timeout (ms)</label>
             <input
               type="number"
               min={1000}
@@ -406,7 +406,7 @@ export default function LiveApiConsole() {
               step={1000}
               value={timeoutMs}
               onChange={(e) => setTimeoutMs(e.target.value)}
-              className="h-9 w-full rounded-md border border-[#324256] bg-[#080B0F] px-3 font-mono text-xs text-[#F1F5F9]"
+              className="h-9 w-full rounded-md border border-[#D1D5DB] bg-[#FAF9F6] px-3 font-mono text-xs text-[#111827]"
             />
           </div>
 
@@ -414,7 +414,7 @@ export default function LiveApiConsole() {
             <button
               type="submit"
               disabled={running}
-              className="inline-flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md bg-[#22C55E] px-4 text-xs font-semibold text-[#05130A] hover:bg-[#4ADE80] disabled:opacity-50"
+              className="inline-flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md bg-[#14532D] px-4 text-xs font-semibold text-white hover:bg-[#15803D] disabled:opacity-50"
             >
               <Play className="h-3.5 w-3.5" />
               <span>{running ? 'Analyzing...' : 'Analyze Position'}</span>
@@ -423,7 +423,7 @@ export default function LiveApiConsole() {
               type="button"
               onClick={handleCancel}
               disabled={!running}
-              className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#F87171]/40 bg-[#F87171]/10 px-3 text-xs font-medium text-[#F87171] disabled:opacity-40"
+              className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#DC2626]/30 bg-[#FEF2F2] px-3 text-xs font-medium text-[#B91C1C] disabled:opacity-40"
             >
               <Square className="h-3.5 w-3.5" />
               <span>Stop</span>
@@ -436,43 +436,43 @@ export default function LiveApiConsole() {
         <div
           className={`rounded-lg border px-4 py-3 text-xs ${
             statusTone === 'ok'
-              ? 'border-[#22C55E]/40 bg-[#22C55E]/10 text-[#DCFCE7]'
+              ? 'border-[#15803D]/30 bg-[#ECFDF5] text-[#14532D]'
               : statusTone === 'error'
-                ? 'border-[#F87171]/40 bg-[#F87171]/10 text-[#FECACA]'
-                : 'border-[#24303F] bg-[#131920] text-[#94A3B8]'
+                ? 'border-[#DC2626]/30 bg-[#FEF2F2] text-[#B91C1C]'
+                : 'border-[#E5E7EB] bg-white text-[#4B5563]'
           }`}
         >
           {statusMessage}
         </div>
 
         <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-[#24303F] bg-[#131920] p-3.5">
-            <div className="text-xs text-[#94A3B8]">Best Move</div>
-            <div className="mt-1 font-mono text-lg font-bold text-[#F1F5F9]">
+          <div className="rounded-xl border border-[#E5E7EB] bg-white p-3.5">
+            <div className="text-xs text-[#6B7280]">Best Move</div>
+            <div className="mt-1 font-mono text-lg font-bold text-[#111827]">
               {bestmove || '—'}
             </div>
           </div>
-          <div className="rounded-xl border border-[#24303F] bg-[#131920] p-3.5">
-            <div className="text-xs text-[#94A3B8]">Eval (White POV)</div>
-            <div className="mt-1 font-mono text-lg font-bold text-[#4ADE80]">
+          <div className="rounded-xl border border-[#E5E7EB] bg-white p-3.5">
+            <div className="text-xs text-[#6B7280]">Eval (White POV)</div>
+            <div className="mt-1 font-mono text-lg font-bold text-[#14532D]">
               {formatEval(highestSnap)}
             </div>
           </div>
-          <div className="rounded-xl border border-[#24303F] bg-[#131920] p-3.5">
-            <div className="text-xs text-[#94A3B8]">Latency</div>
-            <div className="mt-1 font-mono text-lg font-bold text-[#F1F5F9]">
+          <div className="rounded-xl border border-[#E5E7EB] bg-white p-3.5">
+            <div className="text-xs text-[#6B7280]">Latency</div>
+            <div className="mt-1 font-mono text-lg font-bold text-[#111827]">
               {latencyMs !== null ? `${latencyMs} ms` : '—'}
             </div>
           </div>
         </div>
 
-        <div className="rounded-xl border border-[#24303F] bg-[#131920] p-4">
-          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#F1F5F9]">
-            <Activity className="h-4 w-4 text-[#4ADE80]" />
+        <div className="rounded-xl border border-[#E5E7EB] bg-white p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#111827]">
+            <Activity className="h-4 w-4 text-[#14532D]" />
             <span>Progressive Depth Snapshots</span>
           </div>
           {sortedDepths.length === 0 ? (
-            <div className="rounded-md border border-[#24303F] bg-[#080B0F] p-3 text-xs text-[#94A3B8]">
+            <div className="rounded-md border border-[#E5E7EB] bg-[#FAF9F6] p-3 text-xs text-[#6B7280]">
               Snapshots from your Render Stockfish 19 container will stream here.
             </div>
           ) : (
@@ -482,19 +482,19 @@ export default function LiveApiConsole() {
                 return (
                   <div
                     key={d}
-                    className="rounded-md border border-[#24303F] bg-[#080B0F] p-3 text-xs"
+                    className="rounded-md border border-[#E5E7EB] bg-[#FAF9F6] p-3 text-xs"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-mono font-semibold text-[#4ADE80]">Depth {d}</span>
-                      <span className="font-mono text-[#F1F5F9]">
+                      <span className="font-mono font-semibold text-[#14532D]">Depth {d}</span>
+                      <span className="font-mono text-[#111827]">
                         {s.bestmove} · {formatEval(s)}
                       </span>
-                      <span className="font-mono text-[#94A3B8]">
+                      <span className="font-mono text-[#6B7280]">
                         {s.nps ? `${s.nps.toLocaleString()} nps` : ''}
                       </span>
                     </div>
                     {s.continuation && (
-                      <div className="mt-1.5 font-mono text-[11px] text-[#94A3B8]">
+                      <div className="mt-1.5 font-mono text-[11px] text-[#4B5563]">
                         PV: {s.continuation}
                       </div>
                     )}
@@ -505,11 +505,11 @@ export default function LiveApiConsole() {
           )}
         </div>
 
-        <div className="rounded-xl border border-[#24303F] bg-[#131920] p-4">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">
+        <div className="rounded-xl border border-[#E5E7EB] bg-white p-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#6B7280]">
             Raw JSON Payload
           </div>
-          <pre className="max-h-56 overflow-auto rounded-md border border-[#24303F] bg-[#080B0F] p-3 font-mono text-xs text-[#CBD5E1]">
+          <pre className="max-h-56 overflow-auto rounded-md border border-[#E5E7EB] bg-[#FAF9F6] p-3 font-mono text-xs text-[#1F2937]">
             {rawJson}
           </pre>
         </div>

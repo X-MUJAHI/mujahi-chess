@@ -2,20 +2,20 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'MUJAHI Chess Engine API',
+  title: 'Mujahi Chess — Browser Chess Analysis Extension',
   description:
-    'Production-oriented Stockfish 19 (sf_19) hosting platform, static Vercel web console, and Chess Helper 2.1.0 provider architecture.',
+    'Clean, adaptive browser chess analysis with live board overlays, subtle human-style move suggestions, and fast desktop or mobile installation.',
   openGraph: {
-    title: 'MUJAHI Chess Engine API',
+    title: 'Mujahi Chess — Browser Chess Analysis Extension',
     description:
-      'Production-oriented Stockfish 19 (sf_19) hosting platform, static Vercel web console, and Chess Helper 2.1.0 provider architecture.',
+      'Clean, adaptive browser chess analysis with live board overlays, subtle human-style move suggestions, and fast desktop or mobile installation.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'MUJAHI Chess Engine API',
+    title: 'Mujahi Chess — Browser Chess Analysis Extension',
     description:
-      'Production-oriented Stockfish 19 (sf_19) hosting platform, static Vercel web console, and Chess Helper 2.1.0 provider architecture.',
+      'Clean, adaptive browser chess analysis with live board overlays, subtle human-style move suggestions, and fast desktop or mobile installation.',
   },
 };
 
@@ -30,7 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-screen antialiased bg-[#0B0F14] text-[#F1F5F9]" suppressHydrationWarning>
+      <body className="min-h-screen antialiased bg-[#FAF9F6] text-[#111827]" suppressHydrationWarning>
         {children}
       </body>
     </html>
