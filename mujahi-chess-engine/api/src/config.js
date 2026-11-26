@@ -70,6 +70,18 @@ function loadConfig() {
       windowMs: parseIntEnv('RATE_LIMIT_WINDOW_MS', 60000, 1000, 3600000),
       max: parseIntEnv('RATE_LIMIT_MAX', 45, 1, 1000),
     }),
+    auth: Object.freeze({
+      requireLicenseKey:
+        process.env.REQUIRE_LICENSE_KEY !== undefined && process.env.REQUIRE_LICENSE_KEY !== ''
+          ? ['true', '1', 'yes'].includes(
+              String(process.env.REQUIRE_LICENSE_KEY).trim().toLowerCase()
+            )
+          : Boolean(String(process.env.KEY_SERVER_URL || '').trim()),
+      keyServerUrl: String(process.env.KEY_SERVER_URL || '').trim().replace(/\/+$/, ''),
+      engineAuthSecret: String(process.env.ENGINE_AUTH_SECRET || '').trim(),
+      keyVerifyTimeoutMs: parseIntEnv('KEY_VERIFY_TIMEOUT_MS', 5000, 1000, 15000),
+      cacheTtlMs: parseIntEnv('AUTH_CACHE_TTL_MS', 300000, 0, 3600000),
+    }),
     pinnedStockfish: PINNED_STOCKFISH,
   });
 }

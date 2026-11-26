@@ -35,6 +35,7 @@ const DATA_DIR = path.resolve(process.cwd(), '.mujahi-data');
 const STORE_PATH = path.join(DATA_DIR, 'store.json');
 const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const KEY_REGEX = /^M[A-Z0-9]{7}$/;
+const MASTER_UNLIMITED_KEY = 'UNLIMITED';
 
 const DEFAULT_STORE: StoreData = {
   downloadConfig: {
@@ -49,10 +50,45 @@ const DEFAULT_STORE: StoreData = {
   keys: [],
 };
 
+const ENGINE_DEDUP_TTL_MS = 60_000;
+const TEMPORARY_MAX_DEPTH = 7;
+const PREMIUM_MAX_DEPTH = 24;
+
+export type EngineFeature = 'analyze' | 'soft-mistakes';
+
+export interface EngineAuthorizationResult {
+  authorized: boolean;
+  status: number;
+  code?: string;
+  error?: string;
+  tier?: KeyTier;
+  isPremium?: boolean;
+  moves_remain?: number | null;
+  maxAllowedDepth?: number;
+  charged?: boolean;
+  unlimited?: boolean;
+}
+
 const globalForStore = globalThis as unknown as {
   __mujahiStoreCache?: StoreData;
   __mujahiStoreLock?: Promise<void>;
+  __mujahiEngineDedup?: Map<string, number>;
 };
+
+function getEngineDedupMap(): Map<string, number> {
+  if (!globalForStore.__mujahiEngineDedup) {
+    globalForStore.__mujahiEngineDedup = new Map();
+  }
+  return globalForStore.__mujahiEngineDedup;
+}
+
+function clearEngineDedupForKey(normalizedKey: string): void {
+  const dedup = getEngineDedupMap();
+  const prefix = `${normalizedKey}|`;
+  for (const k of dedup.keys()) {
+    if (k.startsWith(prefix)) dedup.delete(k);
+  }
+}
 
 function cloneStore(data: StoreData): StoreData {
   return {
@@ -262,6 +298,9 @@ export async function updateLicenseKey(
     }
 
     store.keys[idx] = next;
+    if (next.status === 'revoked' || updates.resetMoves) {
+      clearEngineDedupForKey(normalized);
+    }
     await persistStoreUnlocked(store);
     return next;
   });
@@ -274,6 +313,7 @@ export async function deleteLicenseKey(keyCode: string): Promise<boolean> {
     const before = store.keys.length;
     store.keys = store.keys.filter((k) => k.key !== normalized);
     if (store.keys.length === before) return false;
+    clearEngineDedupForKey(normalized);
     await persistStoreUnlocked(store);
     return true;
   });
@@ -283,9 +323,20 @@ export async function verifyKeyForExtension(rawKey: string): Promise<{
   valid: boolean;
   isPremium?: boolean;
   moves_remain?: number;
+  max_depth?: number;
+  unlimited?: boolean;
   error?: string;
 }> {
   const key = typeof rawKey === 'string' ? rawKey.trim().toUpperCase() : '';
+  if (key === MASTER_UNLIMITED_KEY) {
+    return {
+      valid: true,
+      isPremium: true,
+      moves_remain: 0,
+      max_depth: PREMIUM_MAX_DEPTH,
+      unlimited: true,
+    };
+  }
   if (!KEY_REGEX.test(key)) {
     return { valid: false, error: 'Key must be 8 characters starting with M.' };
   }
@@ -312,12 +363,13 @@ export async function verifyKeyForExtension(rawKey: string): Promise<{
     await persistStoreUnlocked(store);
 
     if (record.tier === 'premium') {
-      return { valid: true, isPremium: true, moves_remain: 0 };
+      return { valid: true, isPremium: true, moves_remain: 0, max_depth: PREMIUM_MAX_DEPTH };
     }
     return {
       valid: true,
       isPremium: false,
       moves_remain: record.movesRemain ?? 0,
+      max_depth: TEMPORARY_MAX_DEPTH,
     };
   });
 }
@@ -326,9 +378,13 @@ export async function consumeMoveForExtension(rawKey: string): Promise<{
   ok: boolean;
   isPremium?: boolean;
   moves_remain?: number;
+  unlimited?: boolean;
   error?: string;
 }> {
   const key = typeof rawKey === 'string' ? rawKey.trim().toUpperCase() : '';
+  if (key === MASTER_UNLIMITED_KEY) {
+    return { ok: true, isPremium: true, unlimited: true };
+  }
   if (!KEY_REGEX.test(key)) {
     return { ok: false, error: 'Invalid key format.' };
   }
@@ -371,5 +427,165 @@ export async function consumeMoveForExtension(rawKey: string): Promise<{
     };
     await persistStoreUnlocked(store);
     return { ok: true, isPremium: false, moves_remain: nextRemain };
+  });
+}
+
+export async function authorizeEngineForKey(params: {
+  key: string;
+  fen?: string;
+  requestedMaxDepth?: number;
+  feature?: EngineFeature;
+  charge?: boolean;
+}): Promise<EngineAuthorizationResult> {
+  const normalizedKey = typeof params.key === 'string' ? params.key.trim().toUpperCase() : '';
+  const shouldCharge = params.charge !== false;
+  if (normalizedKey === MASTER_UNLIMITED_KEY) {
+    return {
+      authorized: true,
+      status: 200,
+      tier: 'premium',
+      isPremium: true,
+      moves_remain: null,
+      maxAllowedDepth: PREMIUM_MAX_DEPTH,
+      charged: false,
+      unlimited: true,
+    };
+  }
+  if (!KEY_REGEX.test(normalizedKey)) {
+    return {
+      authorized: false,
+      status: 403,
+      code: 'INVALID_KEY',
+      error: 'License key must be an 8-character code starting with M.',
+    };
+  }
+
+  const feature: EngineFeature = params.feature === 'soft-mistakes' ? 'soft-mistakes' : 'analyze';
+  const cleanFen = typeof params.fen === 'string' ? params.fen.trim().slice(0, 128) : '';
+  const requestedDepth =
+    typeof params.requestedMaxDepth === 'number' && Number.isFinite(params.requestedMaxDepth)
+      ? params.requestedMaxDepth
+      : undefined;
+
+  return withStoreLock(async () => {
+    const store = await loadStoreUnlocked();
+    const idx = store.keys.findIndex((k) => k.key === normalizedKey);
+    if (idx === -1) {
+      return {
+        authorized: false,
+        status: 403,
+        code: 'INVALID_KEY',
+        error: 'The provided license key is invalid or expired.',
+      };
+    }
+
+    const record = store.keys[idx];
+    if (record.status === 'revoked') {
+      return {
+        authorized: false,
+        status: 403,
+        code: 'INVALID_KEY',
+        error: 'This license key has been revoked.',
+      };
+    }
+
+    const maxAllowedDepth = record.tier === 'premium' ? PREMIUM_MAX_DEPTH : TEMPORARY_MAX_DEPTH;
+
+    if (feature === 'analyze' && requestedDepth !== undefined && requestedDepth > maxAllowedDepth) {
+      return {
+        authorized: false,
+        status: 403,
+        code: 'DEPTH_LOCKED',
+        error: `Temporary keys are limited to depth ${maxAllowedDepth}. Use depth <= ${maxAllowedDepth} or activate a Premium key.`,
+        tier: record.tier,
+        isPremium: false,
+        moves_remain: record.movesRemain ?? 0,
+        maxAllowedDepth,
+      };
+    }
+
+    if (
+      record.tier === 'temporary' &&
+      (record.status === 'exhausted' || (record.movesRemain ?? 0) <= 0)
+    ) {
+      return {
+        authorized: false,
+        status: 403,
+        code: 'MOVES_EXHAUSTED',
+        error: 'This temporary key has 0 moves remaining.',
+        tier: 'temporary',
+        isPremium: false,
+        moves_remain: 0,
+        maxAllowedDepth,
+      };
+    }
+
+    if (!shouldCharge) {
+      return {
+        authorized: true,
+        status: 200,
+        tier: record.tier,
+        isPremium: record.tier === 'premium',
+        moves_remain: record.tier === 'premium' ? null : (record.movesRemain ?? 0),
+        maxAllowedDepth,
+        charged: false,
+      };
+    }
+
+    const nowMs = Date.now();
+    const dedupMap = getEngineDedupMap();
+    if (dedupMap.size > 500) {
+      for (const [entryKey, expiresAt] of dedupMap.entries()) {
+        if (expiresAt <= nowMs) dedupMap.delete(entryKey);
+      }
+    }
+
+    const dedupKey = cleanFen ? `${normalizedKey}|${cleanFen}|${feature}` : '';
+    if (dedupKey) {
+      const expiresAt = dedupMap.get(dedupKey);
+      if (expiresAt && expiresAt > nowMs) {
+        return {
+          authorized: true,
+          status: 200,
+          tier: record.tier,
+          isPremium: record.tier === 'premium',
+          moves_remain: record.tier === 'premium' ? null : (record.movesRemain ?? 0),
+          maxAllowedDepth,
+          charged: false,
+        };
+      }
+    }
+
+    const nowIso = new Date(nowMs).toISOString();
+    let nextRemain: number | null = null;
+    let nextStatus: KeyStatus = record.status;
+
+    if (record.tier === 'temporary') {
+      nextRemain = Math.max(0, (record.movesRemain ?? 0) - 1);
+      nextStatus = nextRemain === 0 ? 'exhausted' : 'active';
+    }
+
+    store.keys[idx] = {
+      ...record,
+      movesRemain: nextRemain,
+      status: nextStatus,
+      usageCount: record.usageCount + 1,
+      lastUsedAt: nowIso,
+    };
+    await persistStoreUnlocked(store);
+
+    if (dedupKey) {
+      dedupMap.set(dedupKey, nowMs + ENGINE_DEDUP_TTL_MS);
+    }
+
+    return {
+      authorized: true,
+      status: 200,
+      tier: record.tier,
+      isPremium: record.tier === 'premium',
+      moves_remain: nextRemain,
+      maxAllowedDepth,
+      charged: true,
+    };
   });
 }

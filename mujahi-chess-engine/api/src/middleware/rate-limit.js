@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const { extractLicenseKey } = require('./license-auth');
 
 function createAnalysisRateLimiter(config) {
   return rateLimit({
@@ -8,6 +9,7 @@ function createAnalysisRateLimiter(config) {
     limit: config.rateLimit.max,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
+    skip: (req) => extractLicenseKey(req) === 'UNLIMITED',
     handler: (req, res) => {
       res.status(429).json({
         success: false,

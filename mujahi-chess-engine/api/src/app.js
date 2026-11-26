@@ -7,6 +7,7 @@ const { createHealthRouter } = require('./routes/health');
 const { createEngineRouter } = require('./routes/engine');
 const { createAnalyzeRouter } = require('./routes/analyze');
 const { createAnalysisRateLimiter } = require('./middleware/rate-limit');
+const { createLicenseMiddleware } = require('./middleware/license-auth');
 const { errorHandler, notFoundHandler } = require('./middleware/error-handler');
 
 function createApp({ config, engineManager, requestQueue }) {
@@ -47,18 +48,26 @@ function createApp({ config, engineManager, requestQueue }) {
         return callback(err);
       },
       methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'X-Client-Session-Id'],
+      allowedHeaders: ['Content-Type', 'X-Client-Session-Id', 'X-License-Key', 'Authorization'],
+      exposedHeaders: ['X-Moves-Remaining'],
       maxAge: 600,
     })
   );
 
   app.use(express.json({ limit: '16kb' }));
 
+  const licenseAuth = createLicenseMiddleware(config);
+
   app.use('/health', createHealthRouter(engineManager, requestQueue, config));
   app.use('/v1/engine', createEngineRouter(engineManager, config));
+  app.post('/v1/auth/warm', licenseAuth.warmEngineLicense);
 
   const analyzeLimiter = createAnalysisRateLimiter(config);
-  app.use('/v1/analyze', analyzeLimiter, createAnalyzeRouter(engineManager, requestQueue, config));
+  app.use(
+    '/v1/analyze',
+    analyzeLimiter,
+    createAnalyzeRouter(engineManager, requestQueue, config, licenseAuth)
+  );
 
   app.use(notFoundHandler);
   app.use(errorHandler);

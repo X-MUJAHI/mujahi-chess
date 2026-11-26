@@ -35,16 +35,20 @@ function buildApiError(status, payload, fallbackLabel) {
   return err;
 }
 
-async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, signal }) {
+async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, licenseKey, signal }) {
   const sessionId = clientSessionId || getSessionId();
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'X-Client-Session-Id': sessionId,
+  };
+  if (typeof licenseKey === 'string' && licenseKey.trim()) {
+    headers['X-License-Key'] = licenseKey.trim().toUpperCase();
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'X-Client-Session-Id': sessionId,
-    },
+    headers,
     body: JSON.stringify({
       fen,
       depths,
@@ -61,14 +65,18 @@ async function analyzeJson({ baseUrl, fen, depths, timeoutMs, clientSessionId, s
   return payload;
 }
 
-async function analyzeSoftMistakes({ baseUrl, fen, minDropCp, maxDropCp, maxResults, timeoutMs, signal }) {
+async function analyzeSoftMistakes({ baseUrl, fen, minDropCp, maxDropCp, maxResults, timeoutMs, licenseKey, signal }) {
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze/soft-mistakes`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (typeof licenseKey === 'string' && licenseKey.trim()) {
+    headers['X-License-Key'] = licenseKey.trim().toUpperCase();
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
+    headers,
     body: JSON.stringify({
       fen,
       minDropCp,
@@ -86,16 +94,20 @@ async function analyzeSoftMistakes({ baseUrl, fen, minDropCp, maxDropCp, maxResu
   return payload;
 }
 
-async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId, signal, onEvent }) {
+async function analyzeStream({ baseUrl, fen, depths, timeoutMs, clientSessionId, licenseKey, signal, onEvent }) {
   const sessionId = clientSessionId || getSessionId();
   const url = `${normalizeBaseUrl(baseUrl)}/v1/analyze/stream`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+    'X-Client-Session-Id': sessionId,
+  };
+  if (typeof licenseKey === 'string' && licenseKey.trim()) {
+    headers['X-License-Key'] = licenseKey.trim().toUpperCase();
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      'X-Client-Session-Id': sessionId,
-    },
+    headers,
     body: JSON.stringify({
       fen,
       depths,
@@ -435,6 +447,7 @@ chrome.runtime.onConnect.addListener((port) => {
           depths: msg.depths,
           timeoutMs: msg.timeoutMs,
           clientSessionId: msg.clientSessionId,
+          licenseKey: msg.licenseKey,
           signal: controller.signal,
           onEvent: (event, data) => {
             safePost({ type: 'sse_event', requestId: msg.requestId, event, data });
@@ -534,6 +547,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       depths: msg.depths,
       timeoutMs: msg.timeoutMs,
       clientSessionId: msg.clientSessionId,
+      licenseKey: msg.licenseKey,
       signal: controller.signal,
     })
       .then((payload) => sendResponse({ ok: true, payload }))
@@ -558,6 +572,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       maxDropCp: msg.maxDropCp,
       maxResults: msg.maxResults,
       timeoutMs: msg.timeoutMs,
+      licenseKey: msg.licenseKey,
       signal: controller.signal,
     })
       .then((payload) => sendResponse({ ok: true, payload }))
@@ -570,6 +585,40 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           extensionId: chrome.runtime?.id || '',
         })
       );
+    return true;
+  }
+
+  if (msg.type === 'MUJAHI_WARM_KEY') {
+    const baseUrl = normalizeBaseUrl(msg.baseUrl);
+    const licenseKey = typeof msg.licenseKey === 'string' ? msg.licenseKey.trim().toUpperCase() : '';
+    if (!licenseKey || licenseKey === 'UNLIMITED') {
+      sendResponse({ ok: true, skipped: true });
+      return false;
+    }
+    fetch(`${baseUrl}/v1/auth/warm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-License-Key': licenseKey,
+      },
+      body: JSON.stringify({ force: Boolean(msg.force) }),
+    })
+      .then(async (res) => {
+        const payload = await res.json().catch(() => null);
+        sendResponse({
+          ok: res.ok,
+          status: res.status,
+          payload,
+        });
+      })
+      .catch((err) => {
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: err?.message || 'License warm-up failed',
+        });
+      });
     return true;
   }
 

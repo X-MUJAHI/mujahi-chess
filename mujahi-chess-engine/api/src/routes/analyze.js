@@ -6,17 +6,24 @@ const {
   validateAnalyzeQuery,
   validateSoftMistakesBody,
 } = require('../middleware/validation');
+const { createLicenseMiddleware } = require('../middleware/license-auth');
 const { runSoftMistakeScan } = require('../utils/soft-mistakes');
 
 function formatSseEvent(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-function createAnalyzeRouter(engineManager, requestQueue, config) {
+function createAnalyzeRouter(engineManager, requestQueue, config, licenseAuth = null) {
   const router = express.Router();
+  const authMiddleware = licenseAuth || createLicenseMiddleware(config);
+  const requireEngineLicense = (feature) => authMiddleware.requireEngineLicense(feature);
 
   // Standard synchronous JSON analysis endpoint
-  router.post('/', validateAnalyzeBody(config), async (req, res, next) => {
+  router.post(
+    '/',
+    validateAnalyzeBody(config),
+    requireEngineLicense('analyze'),
+    async (req, res, next) => {
     const abortController = new AbortController();
     const onClose = () => {
       if (!res.writableEnded) {
@@ -55,6 +62,7 @@ function createAnalyzeRouter(engineManager, requestQueue, config) {
         cached: analysis.cached,
         deduplicated: analysis.deduplicated,
         results: analysis.results,
+        ...(req.engineAuth ? { quota: req.engineAuth } : {}),
       });
     } catch (err) {
       if (!res.writableEnded && !abortController.signal.aborted) {
@@ -126,6 +134,7 @@ function createAnalyzeRouter(engineManager, requestQueue, config) {
             cached: analysis.cached,
             deduplicated: analysis.deduplicated,
             results: analysis.results,
+            ...(req.engineAuth ? { quota: req.engineAuth } : {}),
           })
         );
         res.end();
@@ -148,64 +157,82 @@ function createAnalyzeRouter(engineManager, requestQueue, config) {
     }
   }
 
-  router.post('/stream', validateAnalyzeBody(config), handleSseStream);
-  router.get('/stream', validateAnalyzeQuery(config), handleSseStream);
+  router.post(
+    '/stream',
+    validateAnalyzeBody(config),
+    requireEngineLicense('analyze'),
+    handleSseStream
+  );
+  router.get(
+    '/stream',
+    validateAnalyzeQuery(config),
+    requireEngineLicense('analyze'),
+    handleSseStream
+  );
 
-  // On-demand 2-stage soft-mistake scan (MultiPV 24 @ depth 7 -> searchmoves @ depth 10)
-  router.post('/soft-mistakes', validateSoftMistakesBody(config), async (req, res, next) => {
-    const abortController = new AbortController();
-    const onClose = () => {
-      if (!res.writableEnded) {
-        abortController.abort();
-      }
-    };
-    res.on('close', onClose);
+  // On-demand 2-stage soft-mistake scan (MultiPV 24 @ depth 7 -> searchmoves @ depth 10 or license maxAllowedDepth)
+  router.post(
+    '/soft-mistakes',
+    validateSoftMistakesBody(config),
+    requireEngineLicense('soft-mistakes'),
+    async (req, res, next) => {
+      const abortController = new AbortController();
+      const onClose = () => {
+        if (!res.writableEnded) {
+          abortController.abort();
+        }
+      };
+      res.on('close', onClose);
 
-    try {
-      const { fen, sideToMove, minDropCp, maxDropCp, maxResults, timeoutMs } =
-        req.validatedSoftMistakes;
+      try {
+        const { fen, sideToMove, minDropCp, maxDropCp, maxResults, timeoutMs } =
+          req.validatedSoftMistakes;
+        const maxAllowed = req.engineAuth?.maxAllowedDepth || config.engine.maxDepth;
+        const stage2Depth = Math.min(10, config.engine.maxDepth, maxAllowed);
+        const stage1Depth = Math.min(7, stage2Depth);
 
-      const scan = await requestQueue.enqueueTask({
-        timeoutMs,
-        signal: abortController.signal,
-        task: ({ engineManager: em, timeoutMs: effectiveTimeout }) =>
-          runSoftMistakeScan({
-            fen,
-            sideToMove,
-            minDropCp,
-            maxDropCp,
-            maxResults,
-            stage1Depth: 7,
-            stage2Depth: Math.min(10, config.engine.maxDepth),
-            multiPvLimit: 24,
-            runMultiPv: ({ targetDepth, multiPv, searchMoves }) =>
-              em.analyzeMultiPv({
-                fen,
-                sideToMove,
-                targetDepth,
-                multiPv,
-                searchMoves,
-                timeoutMs: effectiveTimeout,
-                signal: abortController.signal,
-              }),
-          }),
-      });
+        const scan = await requestQueue.enqueueTask({
+          timeoutMs,
+          signal: abortController.signal,
+          task: ({ engineManager: em, timeoutMs: effectiveTimeout }) =>
+            runSoftMistakeScan({
+              fen,
+              sideToMove,
+              minDropCp,
+              maxDropCp,
+              maxResults,
+              stage1Depth,
+              stage2Depth,
+              multiPvLimit: 24,
+              runMultiPv: ({ targetDepth, multiPv, searchMoves }) =>
+                em.analyzeMultiPv({
+                  fen,
+                  sideToMove,
+                  targetDepth,
+                  multiPv,
+                  searchMoves,
+                  timeoutMs: effectiveTimeout,
+                  signal: abortController.signal,
+                }),
+            }),
+        });
 
-      if (res.writableEnded || abortController.signal.aborted) return;
+        if (res.writableEnded || abortController.signal.aborted) return;
 
-      const status = engineManager.getStatus();
-      res.json({
-        success: true,
-        engine: config.pinnedStockfish.brandName,
-        version: status.version,
-        tag: status.pinnedTag,
-        fen,
-        sideToMove,
-        minDropCp,
-        maxDropCp,
-        maxResults,
-        ...scan,
-      });
+        const status = engineManager.getStatus();
+        res.json({
+          success: true,
+          engine: config.pinnedStockfish.brandName,
+          version: status.version,
+          tag: status.pinnedTag,
+          fen,
+          sideToMove,
+          minDropCp,
+          maxDropCp,
+          maxResults,
+          ...scan,
+          ...(req.engineAuth ? { quota: req.engineAuth } : {}),
+        });
     } catch (err) {
       if (!res.writableEnded && !abortController.signal.aborted) {
         next(err);

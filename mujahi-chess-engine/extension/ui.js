@@ -856,6 +856,7 @@ function setupButtonEvents() {
             localStorage.setItem('ch_active_key', input);
             if (!activatingPremium) localStorage.setItem('ch_bonus_moves', newBonus.toString());
             if (window.chessHelperEngine?.updateMoveUI) window.chessHelperEngine.updateMoveUI();
+            if (window.chessHelperEngine?.warmMujahiKey) window.chessHelperEngine.warmMujahiKey(input, true);
             document.getElementById('ch-key-input').value = "";
         } catch (error) {
             window.showCustomModal("Network Error", "Could not connect to the verification server.");

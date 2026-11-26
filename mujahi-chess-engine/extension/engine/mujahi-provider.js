@@ -114,6 +114,7 @@
       cached: Boolean(rawPayload?.cached ?? snapshot.cached),
       deduplicated: Boolean(rawPayload?.deduplicated ?? snapshot.deduplicated),
       version: rawPayload?.version || snapshot.version || 'Stockfish 19',
+      quota: rawPayload?.quota || snapshot?.quota || null,
       raw: rawPayload || snapshot,
     };
   }
@@ -159,6 +160,7 @@
       debounceMs = 25,
       useSseStream = true,
       timeoutMs = 45000,
+      getLicenseKey = null,
     } = {}) {
       this.baseUrl = String(baseUrl || DEFAULT_API_BASE_URL).replace(/\/+$/, '');
       this.clientSessionId =
@@ -167,10 +169,57 @@
       this.debounceMs = debounceMs;
       this.useSseStream = useSseStream;
       this.timeoutMs = timeoutMs;
+      this.getLicenseKey = typeof getLicenseKey === 'function' ? getLicenseKey : null;
 
       this.currentFen = '';
       this.batchTimers = new Map();
       this.activeStreams = new Map();
+      this._lastWarmedKeyTag = '';
+      this._lastWarmedAt = 0;
+    }
+
+    warmLicenseKey(licenseKey = null, { force = false } = {}) {
+      const key = String(licenseKey || this._resolveLicenseKey() || '').trim().toUpperCase();
+      if (!key || key === 'UNLIMITED') return;
+      const tag = `${this.baseUrl}|${key}`;
+      const now = Date.now();
+      if (!force && this._lastWarmedKeyTag === tag && now - this._lastWarmedAt < 120_000) {
+        return;
+      }
+      this._lastWarmedKeyTag = tag;
+      this._lastWarmedAt = now;
+      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+        try {
+          chrome.runtime.sendMessage(
+            {
+              type: 'MUJAHI_WARM_KEY',
+              baseUrl: this.baseUrl,
+              licenseKey: key,
+              force,
+            },
+            () => {
+              void chrome.runtime.lastError;
+            }
+          );
+        } catch {
+          // Ignore silent pre-warm transport errors
+        }
+      }
+    }
+
+    _resolveLicenseKey() {
+      try {
+        const fromHook = this.getLicenseKey ? this.getLicenseKey() : '';
+        if (fromHook && typeof fromHook === 'string' && fromHook.trim()) {
+          return fromHook.trim().toUpperCase();
+        }
+        if (typeof localStorage !== 'undefined') {
+          return String(localStorage.getItem('ch_active_key') || '').trim().toUpperCase();
+        }
+      } catch {
+        // Ignore storage access failures
+      }
+      return '';
     }
 
     setActivePosition(fen) {
@@ -407,6 +456,7 @@
               depths,
               timeoutMs: this.timeoutMs,
               clientSessionId: this.clientSessionId,
+              licenseKey: this._resolveLicenseKey(),
             },
             (response) => {
               const lastErr = chrome.runtime.lastError;
@@ -533,6 +583,7 @@
             depths,
             timeoutMs: this.timeoutMs,
             clientSessionId: this.clientSessionId,
+            licenseKey: this._resolveLicenseKey(),
           });
         } catch {
           finishedCleanly = true;

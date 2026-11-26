@@ -115,8 +115,38 @@ function getMujahiProvider() {
             useSseStream: true,
             timeoutMs: 45000
         });
+        mujahiProvider.warmLicenseKey?.();
     }
     return mujahiProvider;
+}
+function warmMujahiKey(licenseKey = null, force = false) {
+    try {
+        const provider = getEngineProvider();
+        if (provider !== 'mujahi' && !force) return;
+        const adapter = getMujahiProvider();
+        adapter?.warmLicenseKey?.(licenseKey || getActiveLicenseKey(), { force });
+    } catch (_) {}
+}
+function getActiveLicenseKey() {
+    try {
+        return String(localStorage.getItem('ch_active_key') || '').trim().toUpperCase();
+    } catch (_) {
+        return '';
+    }
+}
+function syncQuotaFromMujahi(quota) {
+    if (!quota || typeof quota !== 'object') return;
+    try {
+        if (quota.isPremium || quota.unlimited) {
+            localStorage.setItem('ch_is_premium', 'true');
+        } else {
+            localStorage.setItem('ch_is_premium', 'false');
+            if (typeof quota.movesRemain === 'number' && Number.isFinite(quota.movesRemain)) {
+                localStorage.setItem('ch_bonus_moves', String(Math.max(0, Math.floor(quota.movesRemain))));
+            }
+        }
+        updateMoveUI();
+    } catch (_) {}
 }
 function testMujahiHealth() {
     const baseUrl = getMujahiBaseUrl();
@@ -148,8 +178,18 @@ function handleMujahiError(error) {
     }
 
     log(`MUJAHI error (${code || status || 'network'}): ${message}`);
-    const isCors = status === 403 || code === 'CORS_FORBIDDEN';
-    const isTerminalClient = isCors || status === 400 || status === 401 || status === 404 || code === 'INVALID_DEPTH';
+    const isAuthError = ['LICENSE_KEY_REQUIRED', 'INVALID_KEY', 'MOVES_EXHAUSTED', 'DEPTH_LOCKED'].includes(code);
+    const isCors = code === 'CORS_FORBIDDEN' || (status === 403 && !isAuthError);
+    const isTerminalClient = isCors || isAuthError || status === 400 || status === 401 || status === 404 || code === 'INVALID_DEPTH';
+
+    if (code === 'INVALID_KEY' || code === 'MOVES_EXHAUSTED') {
+        try {
+            localStorage.removeItem('ch_active_key');
+            localStorage.setItem('ch_is_premium', 'false');
+            if (code === 'MOVES_EXHAUSTED') localStorage.setItem('ch_bonus_moves', '0');
+            updateMoveUI();
+        } catch (_) {}
+    }
 
     if (!hasShownMujahiError && window.showCustomModal) {
         hasShownMujahiError = true;
@@ -159,6 +199,20 @@ function handleMujahiError(error) {
                 'MUJAHI API Blocked by CORS (403)',
                 `Your Render backend rejected requests from extension origin chrome-extension://${extId}.\n\nQuick fix: in Render Dashboard -> Environment -> add chrome-extension://${extId} to CORS_ALLOWED_ORIGINS (or redeploy the updated backend with CORS_ALLOW_EXTENSIONS=true).`
             );
+        } else if (isAuthError) {
+            const title =
+                code === 'DEPTH_LOCKED'
+                    ? 'Depth Locked on Temporary Key'
+                    : code === 'MOVES_EXHAUSTED'
+                        ? 'Key Moves Exhausted'
+                        : 'License Key Required';
+            const body =
+                code === 'DEPTH_LOCKED'
+                    ? `${message}\n\nLower arrow depths to <= 7 or activate a Premium key in Get Moves.`
+                    : `${message}\n\nEnter a valid M-key in Get Moves to continue using MUJAHI Cloud Stockfish 19.`;
+            window.showCustomModal(title, body, 'Get Moves', () => {
+                document.getElementById('ch-btn-get-moves')?.click();
+            });
         } else {
             window.showCustomModal(
                 'MUJAHI API Error',
@@ -747,7 +801,9 @@ async function recordMoveUsage() {
     const isPremium = localStorage.getItem('ch_is_premium') === 'true';
     const activeKey = localStorage.getItem('ch_active_key');
     const count = parseInt(localStorage.getItem('ch_move_count') || '0');
-    if (!isPremium && activeKey) {
+    // When using MUJAHI Cloud Stockfish, Render atomically verifies & deducts moves server-side
+    // via /api/internal/authorize-engine and syncs remaining quota back via analysis.quota.
+    if (!isPremium && activeKey && getEngineProvider() !== 'mujahi') {
         try { fetch('https://xndroid.store/api/consume-move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: activeKey }) }); }
         catch (e) { console.error("Sync failed", e); }
     }
@@ -1281,7 +1337,8 @@ function fetchMujahiSoftMistakes(fen, cfg, signal) {
             minDropCp: cfg.minDropCp,
             maxDropCp: cfg.maxDropCp,
             maxResults: cfg.maxResults,
-            timeoutMs: 30000
+            timeoutMs: 30000,
+            licenseKey: getActiveLicenseKey()
         }, (res) => {
             signal?.removeEventListener('abort', onAbort);
             if (settled || signal?.aborted) return;
@@ -1295,6 +1352,7 @@ function fetchMujahiSoftMistakes(fen, cfg, signal) {
                 reject(err);
                 return;
             }
+            if (res.payload?.quota) syncQuotaFromMujahi(res.payload.quota);
             resolve(res.payload);
         });
     });
@@ -1385,6 +1443,10 @@ async function findSoftMistakes() {
                 };
             } catch (apiErr) {
                 if (apiErr?.name === 'AbortError' || controller.signal.aborted) return;
+                if (['LICENSE_KEY_REQUIRED', 'INVALID_KEY', 'MOVES_EXHAUSTED'].includes(apiErr?.code)) {
+                    handleMujahiError(apiErr);
+                    throw apiErr;
+                }
                 // Fallback transparently to bundled Stockfish 19 Lite WASM if Render doesn't have the new route yet
                 try {
                     result = await runLocalWasmSoftMistakesWithRetry(fen, cfg, controller.signal);
@@ -1459,6 +1521,7 @@ async function fetchEngineBestMove(fen, depth, signal = null) {
             try {
                 const move = await adapter.fetchBestMove(fen, depth, signal, (analysis) => {
                     hasShownMujahiError = false;
+                    if (analysis?.quota) syncQuotaFromMujahi(analysis.quota);
                     const prior = engineAnalysisCache.get(fen);
                     if (!prior || analysis.depth >= (prior.depth || 0)) {
                         setBoundedCache(engineAnalysisCache, fen, analysis, 120);
@@ -1571,6 +1634,7 @@ function setEngineProvider(provider) {
     }
     if (next === 'mujahi') {
         hasShownMujahiError = false;
+        warmMujahiKey(null, true);
     }
     setTimeout(() => scheduleTurnCheck(), 0);
     const providerLabel = next === 'wasm'
@@ -2660,6 +2724,7 @@ window.chessHelperEngine = {
     setEngineProvider: setEngineProvider,
     getEngineProvider: getEngineProvider,
     testMujahiHealth: testMujahiHealth,
+    warmMujahiKey: warmMujahiKey,
     getMyColor: getMyColor,
     refreshSuperMode: refreshSuperMode,
     findSoftMistakes: findSoftMistakes,

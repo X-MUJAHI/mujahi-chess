@@ -37,6 +37,7 @@ function formatEval(snap: DepthSnapshot | null): string {
 
 export default function LiveApiConsole() {
   const [apiUrl, setApiUrl] = useState('https://mujahi-chess.onrender.com');
+  const [licenseKey, setLicenseKey] = useState('UNLIMITED');
   const [fen, setFen] = useState(PRESET_FENS[0].fen);
   const [depthsStr, setDepthsStr] = useState('5,10,15');
   const [transport, setTransport] = useState<'stream' | 'json'>('stream');
@@ -148,6 +149,8 @@ export default function LiveApiConsole() {
         timeoutMs: Number(timeoutMs) || 45000,
       };
 
+      const cleanLicenseKey = licenseKey.trim().toUpperCase();
+
       if (transport === 'json') {
         const res = await fetch(`${cleanBase}/v1/analyze`, {
           method: 'POST',
@@ -155,6 +158,7 @@ export default function LiveApiConsole() {
             'Content-Type': 'application/json',
             Accept: 'application/json',
             'X-Client-Session-Id': sid,
+            ...(cleanLicenseKey ? { 'X-License-Key': cleanLicenseKey } : {}),
           },
           body: JSON.stringify(bodyPayload),
           signal: controller.signal,
@@ -176,6 +180,7 @@ export default function LiveApiConsole() {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
             'X-Client-Session-Id': sid,
+            ...(cleanLicenseKey ? { 'X-License-Key': cleanLicenseKey } : {}),
           },
           body: JSON.stringify(bodyPayload),
           signal: controller.signal,
@@ -315,17 +320,29 @@ export default function LiveApiConsole() {
             </div>
           </div>
 
-          <div>
-            <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Timeout (ms)</label>
-            <input
-              type="number"
-              min={1000}
-              max={180000}
-              step={1000}
-              value={timeoutMs}
-              onChange={(e) => setTimeoutMs(e.target.value)}
-              className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
-            />
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">License Key</label>
+              <input
+                type="text"
+                value={licenseKey}
+                onChange={(e) => setLicenseKey(e.target.value)}
+                placeholder="UNLIMITED"
+                className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[#A1A1AA]">Timeout (ms)</label>
+              <input
+                type="number"
+                min={1000}
+                max={180000}
+                step={1000}
+                value={timeoutMs}
+                onChange={(e) => setTimeoutMs(e.target.value)}
+                className="h-9 w-full rounded-lg border border-white/10 bg-white/5 px-3 font-mono text-xs text-white focus:border-[#81B64C] focus:outline-none"
+              />
+            </div>
           </div>
 
           <div className="flex gap-2 pt-1">

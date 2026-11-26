@@ -261,7 +261,8 @@ export default function AdminKeyManager({ onUnauthorized }: { onUnauthorized: ()
             </h2>
             <p className="text-xs text-[#A1A1AA]">
               Every generated key is 8 uppercase characters starting with{' '}
-              <code className="font-mono font-semibold text-[#81B64C]">M</code>.
+              <code className="font-mono font-semibold text-[#81B64C]">M</code>. Temporary keys enforce
+              depth {'<='} 7 server-side; Premium keys unlock full engine depth.
             </p>
           </div>
           <button
