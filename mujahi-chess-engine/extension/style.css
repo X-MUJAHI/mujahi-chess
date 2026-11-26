@@ -652,3 +652,54 @@ input:checked+.ch-slider:before {
   pointer-events: none;
 }
 
+/* --- Fixed Top Soft Mistakes Dock (always accessible without opening panel) --- */
+.ch-soft-mistakes-dock {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100001;
+  pointer-events: auto;
+  max-width: calc(100vw - 16px);
+}
+.ch-sm-dock-bar {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  background: rgba(16, 17, 21, 0.9);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.ch-sm-dock-range {
+  color: var(--ch-text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ch-sm-dock-list:empty {
+  display: none;
+}
+.ch-sm-dock-list {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.ch-sm-dock-close {
+  background: none;
+  border: 0;
+  color: var(--ch-text-secondary);
+  font: 700 11px/1 var(--ch-font);
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.ch-sm-dock-close:hover {
+  color: var(--ch-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+

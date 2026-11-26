@@ -430,7 +430,22 @@ function initUI() {
             </section>
         </div>`;
 
+    const softMistakesDockEl = document.createElement('div');
+    softMistakesDockEl.id = 'ch-soft-mistakes-dock';
+    softMistakesDockEl.className = 'ch-soft-mistakes-dock';
+    softMistakesDockEl.style.display = 'none';
+    softMistakesDockEl.setAttribute('role', 'region');
+    softMistakesDockEl.setAttribute('aria-label', 'Soft mistake finder');
+    softMistakesDockEl.innerHTML = `
+        <div class="ch-sm-dock-bar">
+            <button type="button" id="ch-dock-find-soft-mistakes" class="ch-soft-mistakes-find-btn" title="Scan on-demand for mild mistakes causing a small evaluation-bar drop">Find</button>
+            <span id="ch-dock-soft-mistakes-range" class="ch-sm-dock-range"></span>
+            <div id="ch-dock-soft-mistakes-list" class="ch-soft-mistakes-list ch-sm-dock-list"></div>
+            <button type="button" id="ch-dock-clear-soft-mistakes" class="ch-sm-dock-close" style="display:none;" title="Clear soft mistake results" aria-label="Clear soft mistake results">✕</button>
+        </div>`;
+
     rootEl.appendChild(bubbleEl);
+    rootEl.appendChild(softMistakesDockEl);
     rootEl.appendChild(panelEl);
     rootEl.appendChild(modalOverlay);
     rootEl.appendChild(superSettingsOverlay);
@@ -450,7 +465,7 @@ function initUI() {
 
 // --- DRAG LOGIC ---
 function setupDragEvents() { const signal = uiAbortController?.signal; bubbleEl.addEventListener('mousedown', dragStart, { signal }); document.addEventListener('mouseup', dragEnd, { signal }); document.addEventListener('mousemove', dragMove, { signal, passive: true }); bubbleEl.addEventListener('touchstart', dragStart, { passive: false, signal }); document.addEventListener('touchend', dragEnd, { signal }); document.addEventListener('touchmove', dragMove, { passive: false, signal }); }
-function dragStart(e) { if (e.target.closest('#chess-helper-panel')) return; drag.active = true; drag.lastTime = Date.now(); if (e.type === "touchstart") { drag.initialX = e.touches[0].clientX - drag.xOffset; drag.initialY = e.touches[0].clientY - drag.yOffset; } else { drag.initialX = e.clientX - drag.xOffset; drag.initialY = e.clientY - drag.yOffset; } }
+function dragStart(e) { if (e.target.closest('#chess-helper-panel, #ch-soft-mistakes-dock')) return; drag.active = true; drag.lastTime = Date.now(); if (e.type === "touchstart") { drag.initialX = e.touches[0].clientX - drag.xOffset; drag.initialY = e.touches[0].clientY - drag.yOffset; } else { drag.initialX = e.clientX - drag.xOffset; drag.initialY = e.clientY - drag.yOffset; } }
 function dragEnd(e) { if (!drag.active) return; drag.active = false; startInertia(); }
 function dragMove(e) { if (!drag.active) return; e.preventDefault(); let cx = e.type === "touchmove" ? e.touches[0].clientX : e.clientX; let cy = e.type === "touchmove" ? e.touches[0].clientY : e.clientY; drag.currentX = cx - drag.initialX; drag.currentY = cy - drag.initialY; const now = Date.now(); const dt = now - drag.lastTime; if (dt > 0) { drag.velocityX = (drag.currentX - drag.xOffset) / dt; drag.velocityY = (drag.currentY - drag.yOffset) / dt; } drag.lastTime = now; drag.xOffset = drag.currentX; drag.yOffset = drag.currentY; updateBubbleTransform(); if (panelEl.classList.contains('visible')) closePanel(); }
 function updateBubbleTransform() { const w = window.innerWidth; const h = window.innerHeight; const size = 52; if (drag.xOffset < 0) drag.xOffset = 0; if (drag.yOffset < 0) drag.yOffset = 0; if (drag.xOffset > w - size) drag.xOffset = w - size; if (drag.yOffset > h - size) drag.yOffset = h - size; bubbleEl.style.transform = `translate3d(${drag.xOffset}px, ${drag.yOffset}px, 0)`; }
@@ -569,6 +584,18 @@ function setupButtonEvents() {
     if (softMistakesFindBtn) {
         softMistakesFindBtn.addEventListener('click', () => {
             if (window.chessHelperEngine?.findSoftMistakes) window.chessHelperEngine.findSoftMistakes();
+        }, { signal });
+    }
+    const softMistakesDockFindBtn = document.getElementById('ch-dock-find-soft-mistakes');
+    if (softMistakesDockFindBtn) {
+        softMistakesDockFindBtn.addEventListener('click', () => {
+            if (window.chessHelperEngine?.findSoftMistakes) window.chessHelperEngine.findSoftMistakes();
+        }, { signal });
+    }
+    const softMistakesDockClearBtn = document.getElementById('ch-dock-clear-soft-mistakes');
+    if (softMistakesDockClearBtn) {
+        softMistakesDockClearBtn.addEventListener('click', () => {
+            if (window.chessHelperEngine?.clearSoftMistakes) window.chessHelperEngine.clearSoftMistakes();
         }, { signal });
     }
 

@@ -1099,92 +1099,136 @@ function softMistakeReasonMessage(reason, cfg) {
     return `None found in −${minStr}..−${maxStr}`;
 }
 
+function buildSoftMistakeChip(cand, state) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `ch-soft-mistake-chip${softMistakesSelectedMove === cand.move ? ' is-active' : ''}`;
+    const dropPawns = Number.isFinite(Number(cand.dropPawns)) ? Number(cand.dropPawns) : (Number(cand.dropCp || 0) / 100);
+    const evalPawns = Number.isFinite(Number(cand.evalPawns)) ? Number(cand.evalPawns) : (Number(cand.evalCp || 0) / 100);
+    btn.title = `${fmtMoveArrow(cand.move)}: drops ${dropPawns.toFixed(2)} pawns · new eval ${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)} (click to play move)`;
+
+    const moveEl = document.createElement('strong');
+    moveEl.textContent = fmtMoveArrow(cand.move);
+    const dropEl = document.createElement('span');
+    dropEl.className = 'ch-sm-drop';
+    dropEl.textContent = `−${dropPawns.toFixed(2)}`;
+    const evalEl = document.createElement('span');
+    evalEl.className = 'ch-sm-eval';
+    evalEl.textContent = `${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)}`;
+
+    btn.append(moveEl, dropEl, evalEl);
+    btn.addEventListener('mouseenter', () => {
+        softMistakesSelectedMove = cand.move;
+        window.drawArrow?.('softMistake', cand.move);
+    });
+    btn.addEventListener('mouseleave', () => {
+        if (softMistakesSelectedMove === cand.move) {
+            softMistakesSelectedMove = '';
+            window.clearArrow?.('softMistake');
+        }
+    });
+    btn.addEventListener('click', async () => {
+        const liveFen = getFEN();
+        const scannedFen = state.fen || softMistakesCurrentFen;
+        if (!liveFen || (scannedFen && liveFen !== scannedFen)) {
+            renderSoftMistakesState({ fen: liveFen || '', status: 'Board changed — click Find again', candidates: [], sourceLabel: '' });
+            return;
+        }
+        if ((liveFen.split(' ')[1] || 'w') !== getMyColor()) {
+            window.showCustomModal?.('Wait for your turn', 'You can only play a soft-mistake move on your turn.');
+            return;
+        }
+        softMistakesSelectedMove = '';
+        window.clearArrow?.('softMistake');
+        for (const chip of document.querySelectorAll('#chess-helper-root .ch-soft-mistake-chip')) chip.disabled = true;
+        try {
+            await makeMove(cand.move);
+        } finally {
+            clearSoftMistakes();
+        }
+    });
+    return btn;
+}
+
+function clearSoftMistakes() {
+    if (softMistakesController) {
+        softMistakesController.abort();
+        softMistakesController = null;
+    }
+    softMistakesSelectedMove = '';
+    window.clearArrow?.('softMistake');
+    const liveFen = getFEN() || '';
+    renderSoftMistakesState({ fen: liveFen, status: liveFen ? 'Click Find for this turn' : 'Click Find when you want mild mistakes', candidates: [], sourceLabel: '' });
+}
+
 function renderSoftMistakesState(state = softMistakesLastState) {
     softMistakesLastState = state;
     const card = document.getElementById('ch-soft-mistakes-card');
     const list = document.getElementById('ch-soft-mistakes-list');
     const rangeLabel = document.getElementById('ch-soft-mistakes-range-label');
     const findBtn = document.getElementById('ch-btn-find-soft-mistakes');
-    if (!card || !list) return;
+
+    const dock = document.getElementById('ch-soft-mistakes-dock');
+    const dockList = document.getElementById('ch-dock-soft-mistakes-list');
+    const dockRangeLabel = document.getElementById('ch-dock-soft-mistakes-range');
+    const dockFindBtn = document.getElementById('ch-dock-find-soft-mistakes');
+    const dockClearBtn = document.getElementById('ch-dock-clear-soft-mistakes');
+    if (!card && !dock) return;
 
     const cfg = getSoftMistakesConfig();
     if (!cfg.enabled) {
-        card.style.display = 'none';
+        if (card) card.style.display = 'none';
+        if (dock) dock.style.display = 'none';
         return;
     }
 
-    card.style.display = 'block';
-    if (rangeLabel) {
-        const minStr = (cfg.minDropCp / 100).toFixed(2);
-        const maxStr = (cfg.maxDropCp / 100).toFixed(2);
-        rangeLabel.textContent = `−${minStr}..−${maxStr}${state.sourceLabel ? ` · ${state.sourceLabel}` : ''}`;
-    }
-    if (findBtn) {
-        findBtn.disabled = Boolean(state.loading);
-        findBtn.textContent = state.loading ? 'Scanning…' : 'Find';
-    }
-
-    list.replaceChildren();
+    const minStr = (cfg.minDropCp / 100).toFixed(2);
+    const maxStr = (cfg.maxDropCp / 100).toFixed(2);
+    const rangeText = `−${minStr}..−${maxStr}${state.sourceLabel ? ` · ${state.sourceLabel}` : ''}`;
     const candidates = Array.isArray(state.candidates) ? state.candidates : [];
-    if (!candidates.length) {
-        const item = document.createElement('span');
-        item.className = 'ch-soft-mistakes-status';
-        item.textContent = state.status || 'Click Find when you want mild mistakes';
-        list.appendChild(item);
-        return;
+
+    if (card) card.style.display = 'block';
+    if (dock) dock.style.display = 'block';
+    if (rangeLabel) rangeLabel.textContent = rangeText;
+    if (dockRangeLabel) dockRangeLabel.textContent = rangeText;
+
+    for (const btn of [findBtn, dockFindBtn]) {
+        if (!btn) continue;
+        btn.disabled = Boolean(state.loading);
+        btn.textContent = state.loading ? 'Scanning…' : 'Find';
     }
 
-    for (const cand of candidates) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = `ch-soft-mistake-chip${softMistakesSelectedMove === cand.move ? ' is-active' : ''}`;
-        const dropPawns = Number.isFinite(Number(cand.dropPawns)) ? Number(cand.dropPawns) : (Number(cand.dropCp || 0) / 100);
-        const evalPawns = Number.isFinite(Number(cand.evalPawns)) ? Number(cand.evalPawns) : (Number(cand.evalCp || 0) / 100);
-        btn.title = `${fmtMoveArrow(cand.move)}: drops ${dropPawns.toFixed(2)} pawns · new eval ${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)} (click to play move)`;
+    if (candidates.length && !softMistakesSelectedMove) {
+        softMistakesSelectedMove = candidates[0].move;
+        window.drawArrow?.('softMistake', candidates[0].move);
+    }
 
-        const moveEl = document.createElement('strong');
-        moveEl.textContent = fmtMoveArrow(cand.move);
-        const dropEl = document.createElement('span');
-        dropEl.className = 'ch-sm-drop';
-        dropEl.textContent = `−${dropPawns.toFixed(2)}`;
-        const evalEl = document.createElement('span');
-        evalEl.className = 'ch-sm-eval';
-        evalEl.textContent = `${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)}`;
+    if (list) {
+        list.replaceChildren();
+        if (!candidates.length) {
+            const item = document.createElement('span');
+            item.className = 'ch-soft-mistakes-status';
+            item.textContent = state.status || 'Click Find when you want mild mistakes';
+            list.appendChild(item);
+        } else {
+            for (const cand of candidates) list.appendChild(buildSoftMistakeChip(cand, state));
+        }
+    }
 
-        btn.append(moveEl, dropEl, evalEl);
-        btn.addEventListener('mouseenter', () => {
-            softMistakesSelectedMove = cand.move;
-            window.drawArrow?.('softMistake', cand.move);
-        });
-        btn.addEventListener('mouseleave', () => {
-            if (softMistakesSelectedMove === cand.move) {
-                softMistakesSelectedMove = '';
-                window.clearArrow?.('softMistake');
-            }
-        });
-        btn.addEventListener('click', async () => {
-            const liveFen = getFEN();
-            const scannedFen = state.fen || softMistakesCurrentFen;
-            if (!liveFen || (scannedFen && liveFen !== scannedFen)) {
-                renderSoftMistakesState({ fen: liveFen || '', status: 'Board changed — click Find again', candidates: [], sourceLabel: '' });
-                return;
-            }
-            if ((liveFen.split(' ')[1] || 'w') !== getMyColor()) {
-                window.showCustomModal?.('Wait for your turn', 'You can only play a soft-mistake move on your turn.');
-                return;
-            }
-            softMistakesSelectedMove = '';
-            window.clearArrow?.('softMistake');
-            for (const chip of list.querySelectorAll('.ch-soft-mistake-chip')) chip.disabled = true;
-            try {
-                await makeMove(cand.move);
-            } finally {
-                if (getFEN() === liveFen) {
-                    for (const chip of list.querySelectorAll('.ch-soft-mistake-chip')) chip.disabled = false;
-                }
-            }
-        });
-        list.appendChild(btn);
+    if (dockList) {
+        dockList.replaceChildren();
+        const isIdlePrompt = !state.loading && !candidates.length && (!state.status || /^Click Find /i.test(state.status));
+        if (dockClearBtn) {
+            dockClearBtn.style.display = (!isIdlePrompt && !state.loading) ? 'inline-block' : 'none';
+        }
+        if (candidates.length) {
+            for (const cand of candidates) dockList.appendChild(buildSoftMistakeChip(cand, state));
+        } else if (!isIdlePrompt && state.status) {
+            const item = document.createElement('span');
+            item.className = 'ch-soft-mistakes-status';
+            item.textContent = state.status;
+            dockList.appendChild(item);
+        }
     }
 }
 
@@ -2342,7 +2386,10 @@ async function makeMove(move) {
     if (!fromRect || !toRect) return;
     const startCoords = { x: fromRect.centerX, y: fromRect.centerY };
     const endCoords = { x: toRect.centerX, y: toRect.centerY };
-    let targetEl = document.elementFromPoint(startCoords.x, startCoords.y) || board;
+    const hitEl = document.elementFromPoint(startCoords.x, startCoords.y);
+    const targetEl = (hitEl && !hitEl.closest?.('#chess-helper-root'))
+        ? hitEl
+        : (getPieceElementOnSquare(fromSq) || board);
     dispatchPointer('pointerdown', targetEl, startCoords);
     await sleep(20);
     dispatchPointer('pointermove', document.body, endCoords);
@@ -2616,6 +2663,7 @@ window.chessHelperEngine = {
     getMyColor: getMyColor,
     refreshSuperMode: refreshSuperMode,
     findSoftMistakes: findSoftMistakes,
+    clearSoftMistakes: clearSoftMistakes,
     refreshSoftMistakesCard: refreshSoftMistakesCard,
     reviewSuperModeSession: reviewSuperModeSession,
     getSuperModeSession: () => superModeSession.slice()
